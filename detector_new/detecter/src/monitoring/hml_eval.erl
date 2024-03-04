@@ -77,8 +77,9 @@
 -type af_var() :: {var, line(), atom()}.
 -type af_max() :: {max, line(), af_var(), af_shml()}.
 -type af_n_and() :: {'and', line(), arity(), af_shml_seq()}.
+-type af_n_or() :: {'or', line(), arity(), af_shml_seq()}.
 -type af_nec() :: {nec, line(), af_act(), af_shml()}.
--type af_shml() :: af_ff() | af_var() | af_max() | af_n_and().
+-type af_shml() :: af_ff() | af_var() | af_max() | af_n_and() | af_n_or().
 -type af_shml_seq() :: [af_nec()].
 -type formula() :: {form, line(), af_mfa(), af_shml()}.
 -type af_mfa() :: {mfa, line(), module(), atom(), arity(), erl_parse:abstract_clause()}.
@@ -360,11 +361,32 @@ create_module(Ast, Module, Opts) ->
         "-generated('@Date@').",
         "-export(['@MfaSpec@'/1])."]),
 
+  %% this is a general format for the files to be saved to. Later rather then
+  RecordSetup =
+    erl_syntax:function(
+      erl_syntax:atom(record),
+      [erl_syntax:clause([erl_syntax:variable('Text')],
+                         none,
+                         [erl_syntax:application(
+                            erl_syntax:atom(record),
+                            [erl_syntax:variable('Text'), fileOpenFormat(?MFA_SPEC)])])]),
+  RecordSetup2 =
+    erl_syntax:function(
+      erl_syntax:atom(record),
+      [erl_syntax:clause([erl_syntax:variable('Text'),
+                          erl_syntax:tuple([erl_syntax:atom(ok), erl_syntax:variable('Fd')])],
+                         none,
+                         [erl_syntax:application(
+                            erl_syntax:atom(file),
+                            erl_syntax:atom(write),
+                            [erl_syntax:variable('Fd'),
+                             erl_syntax:list([erl_syntax:variable('Text')])])])]),
+
   %% Create monitor module.
   Fun =
     erl_syntax:function(
       erl_syntax:atom(?MFA_SPEC), visit_forms(Ast, Opts)),
-  erl_syntax:revert_forms(Forms ++ [Fun]).
+  erl_syntax:revert_forms(Forms ++ [RecordSetup] ++ [RecordSetup2] ++ [Fun]).
 
 %% @private Visits SHMLnf formula nodes and generates the corresponding syntax
 %% tree describing one monitor (i.e. one formula is mapped to one monitor).
@@ -400,7 +422,8 @@ visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts) ->
 
   % Create the body for current function clause, consisting of a singular tagged
   % pair enclosing the monitor encoding as one anonymous function.
-  Body = erl_syntax:tuple([erl_syntax:atom(ok), visit_shml(Shml, Opts)]),
+  Body =
+    erl_syntax:tuple([erl_syntax:atom(ok), erl_syntax:block_expr([visit_shml(Shml, Opts)])]),
 
   % Return function clause for {Mod, Fun, Args} with monitor implementation.
   case opts:verbose_opt(Opts) of
@@ -472,6 +495,34 @@ visit_shml(_Node = {max, _, Var = {var, _, _}, Shml}, Opts) ->
   % recursion unfolding immediately.
   erl_syntax:application(
     erl_syntax:named_fun_expr(Var, [Clause]), []);
+visit_shml(_Node = {'or', _, _, ShmlSeq}, Opts) when is_list(ShmlSeq) ->
+  ?TRACE("Visiting 'and_~w' node ~p.", [length(ShmlSeq), _Node]),
+
+  % Create function clauses for all conjuncts in the n-ary conjunction. These
+  % will be combined to form the function that permits a choice through its
+  % guards.
+  Clauses = visit_shml_seq(ShmlSeq, Opts),
+
+  % Create catch-all function clause to which any unrecognized pattern will
+  % default. The body of this function returns 'end', denoting the monitor
+  % inconclusive verdict.
+  CatchAllClause =
+    case opts:verbose_opt(Opts) of
+      true ->
+        % Create verbose function clause body to include logging information.
+        EventVar = erl_syntax:variable('_E'),
+        Log = create_log("Reached verdict 'end' on event ~p.~n", [EventVar], 'end'),
+        Body = erl_syntax:block_expr([Log, erl_syntax:atom('end')]),
+        erl_syntax:clause([EventVar], none, [Body]);
+      _ ->
+        erl_syntax:clause([erl_syntax:underscore()], none, [erl_syntax:atom('end')])
+    end,
+
+  % Create anonymous function combining all clauses (including catch-all)
+  % denoting all possible branches that the monitor may follow. Each branch
+  % (encoded as a function clause) corresponds to the action of each top
+  % necessity specified in the SHMLnf n-ary conjunction.
+  erl_syntax:fun_expr(Clauses ++ [CatchAllClause]);
 visit_shml(_Node = {'and', _, _, ShmlSeq}, Opts) when is_list(ShmlSeq) ->
   ?TRACE("Visiting 'and_~w' node ~p.", [length(ShmlSeq), _Node]),
 
@@ -535,7 +586,12 @@ visit_nec(_Node = {nec, _, Act, Shml}, Opts) ->
   % guard on said pattern is used as is to construct the clause pattern for the
   % function.
   {Patterns, Guard} = visit_act(Act),
-
+  % Create Recorder
+  Record =
+    erl_syntax:application(
+      erl_syntax:atom(record),
+      [erl_syntax:string(
+         io_lib:format("~p", [visit_act_string(Act)]))]),
   % Create function clause consisting of exactly one pattern and guard. The
   % pattern matches the singular trace event that is to be processed; the guard
   % allows refined matching to be performed dynamically whilst the function
@@ -547,7 +603,7 @@ visit_nec(_Node = {nec, _, Act, Shml}, Opts) ->
       EventVar = erl_syntax:variable('_E'),
       Log = create_log("Analyzing event ~p.~n", [EventVar], prf),
       Match = erl_syntax:match_expr(EventVar, hd(Patterns)),
-      erl_syntax:clause([Match], Guard, [Log, Body]);
+      erl_syntax:clause([Match], Guard, [Record, Log, Body]);
     _ ->
       erl_syntax:clause(Patterns, Guard, [Body])
   end.
@@ -845,3 +901,66 @@ format_error({Line, hml_lexer, Error}) ->
 %%parse_transform(Ast, _) ->
 %%  io:format("~p~n", [Ast]),
 %%  Ast.
+
+%%% ----------------------------------------------------------------------------
+%%% erl_syntax Specific format functions.
+%%% ----------------------------------------------------------------------------
+
+-spec fileOpenFormat(FileName) -> erl_syntax:syntaxTree() when FileName :: string().
+fileOpenFormat(FileName) ->
+  erl_syntax:application(
+    erl_syntax:atom(file),
+    erl_syntax:atom(open),
+    [erl_syntax:string(
+       io_lib:format("Environment/New~p.txt", [FileName])),
+     erl_syntax:list([erl_syntax:atom(append)])]).
+
+%% @private Visits the action 'act' node to extract the pattern and guard from
+%% the abstract syntax clause. The specification of the SHMLnf grammar restricts
+%% clauses to consist of exactly one Erlang pattern with an empty body.
+
+visit_act_string({fork, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
+  {[trace,
+    extract_act_string(Var0),
+    spawn,
+    extract_act_string(Var1),
+    Mod,
+    Fun,
+    extract_act_string(Clause)]};
+visit_act_string({init, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
+  {[trace,
+    extract_act_string(Var0),
+    init,
+    extract_act_string(Var1),
+    Mod,
+    Fun,
+    extract_act_string(Clause)]};
+visit_act_string({exit, _, Var, Clause}) ->
+  {[exit, extract_act_string(Var), extract_act_string(Clause)]};
+visit_act_string({send, _, Var1, Var2, Clause}) ->
+  {[trace,
+    extract_act_string(Var1),
+    send,
+    extract_act_string(Var2),
+    extract_act_string(Clause)]};
+visit_act_string({recv, _, Var, Clause}) ->
+  {[trace, extract_act_string(Var), 'receive', extract_act_string(Clause)]};
+visit_act_string({user, _, Clause}) ->
+  {user, extract_act_string(Clause)}.
+
+extract_act_string({var, _, String}) ->
+  String;
+extract_act_string({atom, _, String}) ->
+  String;
+extract_act_string([]) ->
+  [];
+extract_act_string([Head]) ->
+  extract_act_string(Head);
+extract_act_string([Head | Rest]) ->
+  [extract_act_string(Head) | extract_act_string(Rest)];
+extract_act_string({tuple, _, List}) ->
+  extract_act_string(List);
+extract_act_string({op, _, Op, Var1, Var2}) ->
+  {Op, extract_act_string(Var1), extract_act_string(Var2)};
+extract_act_string({clause, _, List1, List2, List3}) ->
+  {extract_act_string(List1), extract_act_string(List2), extract_act_string(List3)}.
