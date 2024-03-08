@@ -1,6 +1,7 @@
 -module(hml_eval).
 
 -author("Duncan Paul Attard").
+-edited("Jacob Deguara").
 
 %%% Includes.
 -include_lib("stdlib/include/assert.hrl").
@@ -18,6 +19,9 @@
 -export_type([option/0, options/0]).
 -export_type([directory/0]).
 -export_type([line/0, error_description/0, error_info/0, errors/0, warnings/0]).
+
+%%% Imports.
+
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -361,7 +365,7 @@ create_module(Ast, Module, Opts) ->
         "-generated('@Date@').",
         "-export(['@MfaSpec@'/1])."]),
 
-  %% this is a general format for the files to be saved to. Later rather then
+  %% this is a general format for the files to be saved to.
   RecordSetup =
     erl_syntax:function(
       erl_syntax:atom(record),
@@ -591,7 +595,7 @@ visit_nec(_Node = {nec, _, Act, Shml}, Opts) ->
     erl_syntax:application(
       erl_syntax:atom(record),
       [erl_syntax:string(
-         io_lib:format("~p", [visit_act_string(Act)]))]),
+         io_lib:format("~p;", [proof_eval:visit_act_string(Act)]))]),
   % Create function clause consisting of exactly one pattern and guard. The
   % pattern matches the singular trace event that is to be processed; the guard
   % allows refined matching to be performed dynamically whilst the function
@@ -903,7 +907,7 @@ format_error({Line, hml_lexer, Error}) ->
 %%  Ast.
 
 %%% ----------------------------------------------------------------------------
-%%% erl_syntax Specific format functions.
+%%% New stuff
 %%% ----------------------------------------------------------------------------
 
 -spec fileOpenFormat(FileName) -> erl_syntax:syntaxTree() when FileName :: string().
@@ -912,55 +916,6 @@ fileOpenFormat(FileName) ->
     erl_syntax:atom(file),
     erl_syntax:atom(open),
     [erl_syntax:string(
-       io_lib:format("Environment/New~p.txt", [FileName])),
+       io_lib:format("New~p.txt", [FileName])),
      erl_syntax:list([erl_syntax:atom(append)])]).
-
-%% @private Visits the action 'act' node to extract the pattern and guard from
-%% the abstract syntax clause. The specification of the SHMLnf grammar restricts
-%% clauses to consist of exactly one Erlang pattern with an empty body.
-
-visit_act_string({fork, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
-  {[trace,
-    extract_act_string(Var0),
-    spawn,
-    extract_act_string(Var1),
-    Mod,
-    Fun,
-    extract_act_string(Clause)]};
-visit_act_string({init, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
-  {[trace,
-    extract_act_string(Var0),
-    init,
-    extract_act_string(Var1),
-    Mod,
-    Fun,
-    extract_act_string(Clause)]};
-visit_act_string({exit, _, Var, Clause}) ->
-  {[exit, extract_act_string(Var), extract_act_string(Clause)]};
-visit_act_string({send, _, Var1, Var2, Clause}) ->
-  {[trace,
-    extract_act_string(Var1),
-    send,
-    extract_act_string(Var2),
-    extract_act_string(Clause)]};
-visit_act_string({recv, _, Var, Clause}) ->
-  {[trace, extract_act_string(Var), 'receive', extract_act_string(Clause)]};
-visit_act_string({user, _, Clause}) ->
-  {user, extract_act_string(Clause)}.
-
-extract_act_string({var, _, String}) ->
-  String;
-extract_act_string({atom, _, String}) ->
-  String;
-extract_act_string([]) ->
-  [];
-extract_act_string([Head]) ->
-  extract_act_string(Head);
-extract_act_string([Head | Rest]) ->
-  [extract_act_string(Head) | extract_act_string(Rest)];
-extract_act_string({tuple, _, List}) ->
-  extract_act_string(List);
-extract_act_string({op, _, Op, Var1, Var2}) ->
-  {Op, extract_act_string(Var1), extract_act_string(Var2)};
-extract_act_string({clause, _, List1, List2, List3}) ->
-  {extract_act_string(List1), extract_act_string(List2), extract_act_string(List3)}.
+            
