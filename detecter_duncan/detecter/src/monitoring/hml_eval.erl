@@ -6,7 +6,7 @@
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("syntax_tools/include/merl.hrl").
 
--include("Thesis_changes/detecter/detecter/include/log.hrl").
+-include("log.hrl").
 
 %%% Public API.
 -export([compile/2, parse_string/1, parse_file/1]).

@@ -10,10 +10,9 @@
 
 -export([visit_act_string/1, read_env/1, create_proof_tree/1]).
 -export([sub_EnvTrace/2]).
--export([already_exists/2]).
--export([append_EnvTrace/2]).
 -export([find_ff_shml/1]).
 -export([sub_EnvTraces/2]).
+-export([prove_property/2]).
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -105,7 +104,7 @@
 -type pf_head() :: {head, [pf_formula()]}.
 -type envTrace() :: [string()].
 -type envTraces() :: [envTrace()].
--type proof_return_types() :: ff | undefined | {atom(), envTraces()}.
+-type proof_return_types() :: ff | undefined | {atom(), ff}.
 
 %%% ----------------------------------------------------------------------------
 %%% Trace Format Functions.
@@ -180,7 +179,7 @@ split_Bytes(Line) ->
 % Applies a function to a list
 foreach(F, [H | T]) ->
     [F(H) | foreach(F, T)];
-foreach(F, []) ->
+foreach(_, []) ->
     [].
 
 % creates a tree based on the hml for proofing
@@ -200,7 +199,7 @@ visit_proof_forms([{form, _, _, Shml} | Forms]) ->
 visit_proof_shml(_Node = {ff, _}) ->
     {ff};
 visit_proof_shml(Var = {var, _, Name}) ->
-    {Var, Name};
+    {var, Name};
 visit_proof_shml(_Node = {max, _, _Var = {var, _, Name}, Shml}) ->
     {max, {var, Name}, visit_proof_shml(Shml)};
 visit_proof_shml(_Node = {'or', _, _, ShmlSeq}) when is_list(ShmlSeq) ->
@@ -220,13 +219,13 @@ visit_proof_shml_seq([Nec | ShmlSeq]) ->
 visit_proof_nec(_Node = {nec, _, Act, Shml}) ->
     Body = visit_proof_shml(Shml),
     Trace = io_lib:format("~p", [visit_act_string(Act)]),
-    io:format("~p~n", [flatten([Trace])]),
+    %io:format("Before: ~p~nAfter: ~p~n", [Shml,Body]),
     {nec, flatten(Trace), Body}.
 
 % takes a lists of lists and returns a list
 flatten(X) ->
     flatten(X, []).
-    
+
 flatten([], Acc) ->
     Acc;
 flatten([[] | T], Acc) ->
@@ -236,172 +235,177 @@ flatten([[_ | _] = H | T], Acc) ->
 flatten([H | T], Acc) ->
     flatten(T, Acc ++ [H]).
 
--spec prove_property(Proof_tree, EnvTrace) -> no | undefined
-    when Proof_tree :: [pf_head()],
-         EnvTrace :: envTraces().
-prove_property(_Proof_tree = {head, Form_seq}, EnvTrace) ->
-    prove_property_form_seq(Form_seq, EnvTrace).
+%%% ----------------------------------------------------------------------------
+%%% Proof System Functions.
+%%% ----------------------------------------------------------------------------
 
--spec prove_property_form_seq(List, EnvTrace) -> no | undefined
+-spec prove_property(Proof_tree, History) -> no | undefined
+    when Proof_tree :: [pf_head()],
+         History :: envTraces().
+prove_property(_Proof_tree = {head, Form_seq}, History) ->
+    %?TRACE("Proving Property at -HEAD- ~p.",[Form_seq]),
+    prove_property_form_seq(Form_seq, History, dict:new()).
+
+-spec prove_property_form_seq(List, History, RecRefDic) -> no | undefined
     when List :: [pf_formula()],
-         EnvTrace :: envTraces().
-prove_property_form_seq(_List = [_Head = {form, Shml}], EnvTrace) ->
-    Result = prove_shml(Shml, EnvTrace),
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_property_form_seq(_List = [_Head = {form, Shml}], History, RecRefDic) ->
+    Result = prove_shml(Shml, History, RecRefDic),
     if Result == ff ->
            no;
        true ->
            undefined
     end;
-prove_property_form_seq(_List = [_Head = {form, Shml} | Rest], EnvTrace) ->
-    Result = prove_shml(Shml, EnvTrace),
+prove_property_form_seq(_List = [_Head = {form, Shml} | Rest], History, RecRefDic) ->
+    Result = prove_shml(Shml, History, RecRefDic),
     if Result == ff ->
            no;
        true ->
-           prove_property_form_seq(Rest, EnvTrace)
+           prove_property_form_seq(Rest, History, RecRefDic)
     end.
 
--spec prove_shml(Shml, EnvTrace) -> proof_return_types()
+-spec prove_shml(Shml, History, RecRefDic) -> proof_return_types()
     when Shml :: pf_shml(),
-         EnvTrace :: envTraces().
-prove_shml({ff}, _) ->
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_shml({ff}, _ENV, _) ->
+    %?TRACE("Proving 'ff' Leaf node~n.",[]),
     ff;
-prove_shml({var, Var}, EnvTrace) ->
-    if EnvTrace == [] ->
+prove_shml({var, Var}, History, RecRefDic) ->
+    {Rec, _OldHistory} = dict:fetch(Var, RecRefDic),
+    %?TRACE("Proving 'var' Leaf node~n Opening Tree: ~p~n.",[Rec]),
+    Result = prove_shml(Rec, History, RecRefDic),
+    prove_var_analysis(Result, Var);
+prove_shml(_Max = {max, _Var_ob = {var, Var}, Shml}, History, RecRefDic) ->
+    %?TRACE("Proving 'max' node~n Tree: ~p~n.",[Shml]),
+    NewRecRefDic = dict:store(Var, {Shml, History}, RecRefDic),
+    Result = prove_shml(Shml, History, NewRecRefDic),
+    prove_max_analysis(Result, Var);
+prove_shml({'and', ShmlSeq}, History, RecRefDic) ->
+    %?TRACE("Proving 'and' node~n Tree: ~p~n.",[ShmlSeq]),
+    prove_shml_seq_and(ShmlSeq, History, RecRefDic);
+prove_shml({'or', ShmlSeq}, History, RecRefDic) ->
+    %?TRACE("Proving 'or' node~n Tree: ~p~n.",[ShmlSeq]),
+    prove_shml_seq_or(ShmlSeq, History, RecRefDic).
+
+-spec prove_max_analysis(Result :: proof_return_types(), MaxVar :: atom()) ->
+                            proof_return_types().
+prove_max_analysis(ff, _) ->
+    ff;
+prove_max_analysis(undefined, _) ->
+    undefined;
+prove_max_analysis({Var, Result}, MaxVar) when MaxVar == Var ->
+    Result;
+prove_max_analysis(Original = {Var, _Result}, MaxVar) when MaxVar =/= Var ->
+    Original.
+
+-spec prove_var_analysis(Result :: proof_return_types(), Var :: atom()) ->
+                            proof_return_types().
+prove_var_analysis(ff, Var) ->
+    {Var, ff};
+prove_var_analysis(undefined, Var) ->
+    undefined;
+prove_var_analysis({_, Result}, Var) ->
+    prove_var_analysis(Result, Var).
+
+-spec prove_shml_seq_and(Shml_seq, History, RecRefDic) -> proof_return_types()
+    when Shml_seq :: pf_shml_seq(),
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_shml_seq_and([Nec], History, RecRefDic) ->
+    Result = prove_nec(Nec, History, RecRefDic),
+    %?TRACE("Proving 'and' -continued- ~nResult ~p.",[Result]),
+    Result;
+prove_shml_seq_and([Nec | Shml_seq], History, RecRefDic) ->
+    Result = prove_nec(Nec, History, RecRefDic),
+    %?TRACE("Proving 'and' -continued- ~nResult ~p.",[Result]),
+    prove_shml_seq_and_analysis(Result, Shml_seq, History, RecRefDic).
+
+-spec prove_shml_seq_and_analysis(Result, Next_Shml, History, RecRefDic) ->
+                                     proof_return_types()
+    when Result :: proof_return_types(),
+         Next_Shml :: pf_shml_seq(),
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_shml_seq_and_analysis(ff, _, _, _) ->
+    ff;
+prove_shml_seq_and_analysis(undefined, [], _, _) ->
+    undefined;
+prove_shml_seq_and_analysis(Result = {_, _}, _, _, _) ->
+    Result;
+prove_shml_seq_and_analysis(undefined, Next_Shml, History, RecRefDic) ->
+    prove_shml_seq_and(Next_Shml, History, RecRefDic).
+
+-spec prove_shml_seq_or(Shml_seq, History, RecRefDic) -> proof_return_types()
+    when Shml_seq :: pf_shml_seq(),
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_shml_seq_or([Nec], History, RecRefDic) ->
+    Result = prove_nec(Nec, History, RecRefDic),
+    %?TRACE("Proving 'or' -continued- ~nResult ~p.",[Result]),
+    prove_shml_seq_or_analysis(Result, find_ff_shml(Nec), [], History, RecRefDic);
+prove_shml_seq_or([Nec | Shml_seq], History, RecRefDic) ->
+    Result = prove_nec(Nec, History, RecRefDic),
+    %?TRACE("Proving 'or' -continued- ~nResult ~p.",[Result]),
+    prove_shml_seq_or_analysis(Result, find_ff_shml(Nec), Shml_seq, History, RecRefDic).
+
+-spec prove_shml_seq_or_analysis(Result, Nec, Next_Shml, History, RecRefDic) ->
+                                    proof_return_types()
+    when Result :: proof_return_types(),
+         Nec :: pf_nec(),
+         Next_Shml :: pf_shml_seq(),
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_shml_seq_or_analysis(ff, _, [], _, _) ->
+    ff;
+prove_shml_seq_or_analysis(undefined, false, [], _, _) ->
+    ff;
+prove_shml_seq_or_analysis(undefined, true, [], _, _) ->
+    undefined;
+prove_shml_seq_or_analysis(ff, _, Next_Shml, History, RecRefDic) ->
+    prove_shml_seq_or(Next_Shml, History, RecRefDic);
+prove_shml_seq_or_analysis(undefined, false, Next_Shml, History, RecRefDic) ->
+    prove_shml_seq_or(Next_Shml, History, RecRefDic);
+prove_shml_seq_or_analysis(undefined, true, Next_Shml, History, RecRefDic) ->
+    Result = prove_shml_seq_or(Next_Shml, History, RecRefDic),
+    if Result == ff ->
            undefined;
-       true ->
-           {Var, EnvTrace}
-    end;
-prove_shml(Max = {max, _Var_ob = {var, Var}, Shml}, EnvTrace) ->
-    Result = prove_shml(Shml, EnvTrace),
-    {Result_check, NewEnvTrace} = check_Var(Result, Var, EnvTrace),
-    if Result_check ->
-           prove_shml(Max, NewEnvTrace);
+       Result == undefined ->
+           undefined;
        true ->
            Result
     end;
-prove_shml({'and', ShmlSeq}, EnvTrace) ->
-    prove_shml_seq_and(ShmlSeq, EnvTrace);
-prove_shml({'or', ShmlSeq}, EnvTrace) ->
-    prove_shml_seq_or(ShmlSeq, EnvTrace).
+prove_shml_seq_or_analysis(Result = {_, _}, _, _, _, _) ->
+    Result.
 
--spec prove_shml_seq_and(Shml_seq, EnvTrace) -> proof_return_types()
-    when Shml_seq :: pf_shml_seq(),
-         EnvTrace :: envTraces().
-prove_shml_seq_and([Nec], EnvTrace) ->
-    prove_nec(Nec, EnvTrace);
-prove_shml_seq_and([Nec | Shml_seq], EnvTrace) ->
-    Result = prove_nec(Nec, EnvTrace),
-    if Result == undefined ->
-           prove_shml_seq_and(Shml_seq, EnvTrace);
-       Result == ff ->
-           ff;
-       true ->
-           Result_SubSet = check_EnvTrace_SubSet(Result, EnvTrace),
-           if Result_SubSet ->
-                  prove_shml_seq_and(Shml_seq, EnvTrace);
-              true ->
-                  Result
-           end
-    end.
+% create a function for prove_shml_seq_or for determineing the result of
+% 2 returns based on what they return => return => ff, undefined or, Var
+% example 1:ff and 2:ff => ff,
+% example 1:ff and 2:undefinied + no ff leaf => ff,
+% example 1:ff and 2:Var + subset not new + no ff leaf => ff,
+% ect...
+% whit this we can determine any number of return values
+% F(1:R  F(2:R 3:R):R ):R
 
--spec prove_shml_seq_or(Shml_seq, EnvTrace) -> proof_return_types()
-    when Shml_seq :: pf_shml_seq(),
-         EnvTrace :: envTraces().
-prove_shml_seq_or([Nec], EnvTrace) ->
-    prove_nec(Nec, EnvTrace);
-prove_shml_seq_or([Nec | Shml_seq], EnvTrace) ->
-    Result = prove_nec(Nec, EnvTrace),
-    Result_ff = find_ff_shml(Nec),
-    if Result == ff ->
-           prove_shml_seq_or(Shml_seq, EnvTrace);
-       Result == undefined ->
-           if Result_ff == found ->
-                  Result;
-              true ->
-                  prove_shml_seq_or(Shml_seq, EnvTrace)
-           end;
-       true -> % {Var, Rest of the Trace} do this in a function so that you can
-           % change the EnvTrace if needed.
-           if Result_ff == none ->
-                  Result_Next = prove_shml_seq_or(Shml_seq, EnvTrace),
-                  if Result_Next == ff ->
-                         ff;
-                     Result_Next == undefined ->
-                         Result;
-                     true ->
-                         Result_SubSet = check_EnvTrace_SubSet(Result_Next, EnvTrace),
-                         if Result_SubSet ->
-                                Result;
-                            true ->
-                                Result_Next
-                         end
-                  end;
-              true ->
-                  Result
-           end
-    end.
-
--spec check_EnvTrace_SubSet(EnvTrace1, EnvTrace2) -> boolean()
-    when EnvTrace1 :: envTraces(),
-         EnvTrace2 :: envTrace().
-check_EnvTrace_SubSet({_, NewEnvTrace}, EnvTrace) ->
-    check_EnvTrace_SubSet(EnvTrace, NewEnvTrace);
-check_EnvTrace_SubSet([LastTrace], Trace) ->
-    Result = ordsets:is_subset(LastTrace, Trace),
-    if Result ->
-           true;
-       true ->
-           false
-    end;
-check_EnvTrace_SubSet([HeadTrace | RestTrace], Trace) ->
-    Result = ordsets:is_subset(HeadTrace, Trace),
-    if Result ->
-           true;
-       true ->
-           check_EnvTrace_SubSet(RestTrace, Trace)
-    end.
-
--spec prove_nec(Nec, EnvTrace) -> proof_return_types()
+-spec prove_nec(Nec, History, RecRefDic) -> proof_return_types()
     when Nec :: pf_nec(),
-         EnvTrace :: envTraces().
-prove_nec(_Nec = {nec, Trace, Shml}, EnvTrace) ->
-    Result = sub_EnvTrace(EnvTrace, Trace),
+         History :: envTraces(),
+         RecRefDic :: dict:dict().
+prove_nec(_Nec = {nec, Trace, Shml}, History, RecRefDic) ->
+    %?TRACE("Proving 'nec' node with Trace ~p,~n ENV: ~p.",[Trace,History]),
+    Result = sub_EnvTrace(History, Trace),
     if Result == [] ->
            undefined;
        true ->
-           prove_shml(Shml, Result)
+           prove_shml(Shml, Result, RecRefDic)
     end.
 
--spec check_Var(Proof_return, Var, EnvTrace) -> {boolean(), envTraces()}
-    when Proof_return :: proof_return_types(),
-         Var :: atom(),
-         EnvTrace :: envTraces().
-check_Var(ff, _, EnvTrace) ->
-    {false, EnvTrace};
-check_Var(undefined, _, EnvTrace) ->
-    {false, EnvTrace};
-check_Var({Var, NewEnvTrace}, VarMax, EnvTrace) ->
-    if %% If VarMax (which is the Var the max object represents)
-       %% is the same as the Var given
-       VarMax == Var ->
-           %% then append the newTrace to our oldTrace
-           {NewEnvTraceList, Result} = append_EnvTrace(EnvTrace, NewEnvTrace),
-           if %% if the Result doesnt change then there are no new Traces we can use
-              Result == old ->
-                  {false, EnvTrace};
-              %% else the NewTraceList
-              true ->
-                  {true, NewEnvTraceList}
-           end;
-       true ->
-           {false, EnvTrace}
-    end.
-
--spec find_ff_shml(PF_stucture) -> found | none when PF_stucture :: pf_shml() | pf_nec().
+-spec find_ff_shml(PF_stucture) -> boolean() when PF_stucture :: pf_shml() | pf_nec().
 find_ff_shml({ff}) ->
-    found;
+    true;
 find_ff_shml({var, _}) ->
-    none;
+    false;
 find_ff_shml({max, _, Shml}) ->
     find_ff_shml(Shml);
 find_ff_shml({'and', ShmlSeq}) ->
@@ -411,56 +415,16 @@ find_ff_shml({'or', ShmlSeq}) ->
 find_ff_shml({nec, _, Shml}) ->
     find_ff_shml(Shml).
 
--spec find_ff_shml_seq(PF_stucture_list) -> found | none
+-spec find_ff_shml_seq(PF_stucture_list) -> boolean()
     when PF_stucture_list :: pf_shml_seq().
 find_ff_shml_seq([Nec]) ->
     find_ff_shml(Nec);
 find_ff_shml_seq([Nec | Shml_seq]) ->
     Result = find_ff_shml(Nec),
-    if Result == none ->
+    if Result == false ->
            find_ff_shml_seq(Shml_seq);
        true ->
-           Result
-    end.
-
--spec already_exists(EnvTrace, Trace) -> boolean()
-    when EnvTrace :: envTraces(),
-         Trace :: envTrace().
-already_exists([HeadTrace], Trace) ->
-    Result = ordsets:is_subset(HeadTrace, Trace) andalso ordsets:is_subset(Trace, HeadTrace),
-    if Result ->
-           true;
-       true ->
-           false
-    end;
-already_exists([HeadTrace | RestTrace], Trace) ->
-    Result = ordsets:is_subset(HeadTrace, Trace) andalso ordsets:is_subset(Trace, HeadTrace),
-    if Result ->
-           true;
-       true ->
-           already_exists(RestTrace, Trace)
-    end.
-
--spec append_EnvTrace(TraceList1, TraceList2) -> {TraceList3, old | new}
-    when TraceList1 :: envTraces(),
-         TraceList2 :: envTraces(),
-         TraceList3 :: envTraces().
-append_EnvTrace(TraceListOld, TraceListNew) ->
-    append_EnvTrace(TraceListOld, TraceListNew, old).
-
-append_EnvTrace(TraceListOld, [TraceHead2], Result_is) when is_list(TraceHead2) ->
-    Result = already_exists(TraceListOld, TraceHead2),
-    if Result ->
-           {TraceListOld, Result_is};
-       true ->
-           {lists:append(TraceListOld, [TraceHead2]), new}
-    end;
-append_EnvTrace(TraceListOld, [TraceHead2 | TraceRest2], Result_is) ->
-    Result = already_exists(TraceListOld, TraceHead2),
-    if Result ->
-           append_EnvTrace(TraceListOld, TraceRest2, Result_is);
-       true ->
-           append_EnvTrace(lists:append(TraceListOld, [TraceHead2]), TraceRest2, new)
+           true
     end.
 
 -spec sub_EnvTraces(TraceList, Trace) -> {Result, boolean()}

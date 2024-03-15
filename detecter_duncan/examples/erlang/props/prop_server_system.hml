@@ -1,0 +1,14 @@
+with
+  server_system:loop(_)
+monitor
+  and([_ <- _, server_system:loop(_)]
+    max(X.
+      and([_ ? {_, {rec, {_}}}]
+        and(
+          [_:_ ! {ok, alloc}]ff,
+          [_:_ ! {ok, closing}]ff,
+          [_:_ ! {ok, _}]X
+        )
+      )
+    )
+  ).
