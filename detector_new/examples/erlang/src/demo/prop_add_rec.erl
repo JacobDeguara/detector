@@ -2,25 +2,25 @@
 
 -author("detectEr").
 
--generated("2024/ 3/04 14:23:07").
+-generated("2024/ 3/21 17:14:09").
 
 -export([mfa_spec/1]).
 
 record(Text) ->
-    record(Text, file:open("Newmfa_spec.txt", [append])).
-
-record(Text, {ok, Fd}) ->
+    {ok,Fd} = file:open("Newmfa_spec.txt", [append]),
     file:write(Fd, [Text]).
+
 
 mfa_spec(_Mfa = {calc_server, loop, [_]}) ->
     {ok,
      begin
+        Record = "~nHELLO~n",
          io:format("\e[1m\e[33m*** [~w] Instrumenting monitor for MFA pattern '~p'.~n\e[0m",
                    [self(), _Mfa]),
          fun (_E = {trace, _, spawned, _, {calc_server, loop, [_]}}) ->
                  record("{trace,'_',init,'_',calc_server,loop,{'_',[],[]}};"),
                  io:format("\e[37m*** [~w] Analyzing event ~p.~n\e[0m", [self(), _E]),
-                 fun X() ->
+                 fun() ->
                          fun (_E = {trace, _, 'receive', {_, {add, A, B}}}) ->
                                  record("{trace,'_','receive',{['_',add,'A'|'B'],[],[]}};"),
                                  io:format("\e[37m*** [~w] Analyzing event ~p.~n\e[0m",
