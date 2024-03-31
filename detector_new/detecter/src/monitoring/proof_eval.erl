@@ -10,6 +10,9 @@
 
 -export([visit_act_string/1, read_env/1, create_proof_tree/1]).
 -export([prove_property/2]).
+-export([create_erl_syntax_proof_tree/1]).
+-export([write_history/2]).
+-export([fix_trace/1]).
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -374,3 +377,79 @@ sub_Histories([[Head_EnvTrace | Rest_EnvTrace] | Rest_EnvTraces], Trace) ->
        true ->
            sub_Histories(Rest_EnvTraces, Trace)
     end.
+
+create_erl_syntax_proof_tree({ff}) ->
+    erl_syntax:tuple([erl_syntax:atom(ff)]);
+create_erl_syntax_proof_tree({var, Atom}) ->
+    erl_syntax:tuple([erl_syntax:atom(var), erl_syntax:atom(Atom)]);
+create_erl_syntax_proof_tree({max, Var, Shml}) ->
+    erl_syntax:tuple([erl_syntax:atom(max),
+                      create_erl_syntax_proof_tree(Var),
+                      create_erl_syntax_proof_tree(Shml)]);
+create_erl_syntax_proof_tree({'and', Shml_seq}) ->
+    erl_syntax:tuple([erl_syntax:atom('and'),
+                      erl_syntax:list(create_erl_syntax_proof_tree_seq(Shml_seq))]);
+create_erl_syntax_proof_tree({'or', Shml_seq}) ->
+    erl_syntax:tuple([erl_syntax:atom('or'),
+                      erl_syntax:list(create_erl_syntax_proof_tree_seq(Shml_seq))]);
+create_erl_syntax_proof_tree({form, Shml}) ->
+    erl_syntax:tuple([erl_syntax:atom(form), create_erl_syntax_proof_tree(Shml)]);
+create_erl_syntax_proof_tree({head, Shml_seq}) ->
+    erl_syntax:tuple([erl_syntax:atom(head),
+                      erl_syntax:list(create_erl_syntax_proof_tree_seq(Shml_seq))]);
+create_erl_syntax_proof_tree({nec, Act, Shml}) ->
+    erl_syntax:tuple([erl_syntax:atom(nec),
+                      erl_syntax:string(Act),
+                      create_erl_syntax_proof_tree(Shml)]).
+
+create_erl_syntax_proof_tree_seq([Shml]) ->
+    [create_erl_syntax_proof_tree(Shml)];
+create_erl_syntax_proof_tree_seq([Shml | Shml_seq]) ->
+    [create_erl_syntax_proof_tree(Shml) | create_erl_syntax_proof_tree_seq(Shml_seq)].
+
+-spec add_to_history(TraceList, Trace) -> Result
+    when TraceList :: history(),
+         Trace :: trace(),
+         Result :: history().
+add_to_history([], []) ->
+    [];
+add_to_history([], Trace) ->
+    [Trace];
+add_to_history([HeadTrace | RestHistory], Trace) ->
+    Test = ordsets:is_subset(HeadTrace, Trace) andalso ordsets:is_subset(Trace, HeadTrace),
+    if Test ->
+           [HeadTrace | add_to_history(RestHistory, [])];
+       true ->
+           [HeadTrace | add_to_history(RestHistory, Trace)]
+    end.
+
+-spec write_history(New_Trace, FileName) -> New_History
+    when New_Trace :: trace(),
+         FileName :: string(),
+         New_History :: history().
+write_history(New_Trace, FileName)  ->
+    {ok, Fd} = file:open(FileName, [append]),
+    {ok, Old_History} = read_env(FileName),
+    New_History = add_to_history(Old_History, New_Trace),
+    Test =
+        ordsets:is_subset(Old_History, New_History)
+        andalso ordsets:is_subset(New_History, Old_History),
+    if Test ->
+           New_History;
+       true ->
+           file:write(Fd, [format_trace_for_writing(New_Trace), "\n"]),
+           New_History
+    end.
+
+
+format_trace_for_writing([]) ->
+    [];
+format_trace_for_writing([Head|Rest]) ->
+    [Head,";"|format_trace_for_writing(Rest)].
+
+
+% I noticed that the Trace isnt converting to correct single String formats so this should flattens the List to the correct format.
+fix_trace([]) ->
+        [];
+fix_trace([Head|Rest]) ->
+        [lists:flatten(Head)|fix_trace(Rest)].

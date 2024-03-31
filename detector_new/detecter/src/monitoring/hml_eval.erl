@@ -1,6 +1,7 @@
 -module(hml_eval).
 
 -author("Duncan Paul Attard").
+
 -edited("Jacob Deguara").
 
 %%% Includes.
@@ -22,6 +23,7 @@
 
 %%% Imports.
 
+-import(proof_eval, [create_erl_syntax_proof_tree/1, create_proof_tree/1]).
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -100,6 +102,7 @@
   af_send_act() |
   af_recv_act() |
   af_user_act().
+-type tracename() :: [string() | integer()].
 
 %%% ----------------------------------------------------------------------------
 %%% Public API.
@@ -363,41 +366,22 @@ create_module(Ast, Module, Opts) ->
     ?Q(["-module('@Module@').",
         "-author(\"detectEr\").",
         "-generated('@Date@').",
-        "-export(['@MfaSpec@'/1])."]),
-
-  %% this is a general format for the files to be saved to.
-  RecordSetup =
-    erl_syntax:function(
-      erl_syntax:atom(record),
-      [erl_syntax:clause([erl_syntax:variable('Text')],
-                         none,
-                         [erl_syntax:application(
-                            erl_syntax:atom(record),
-                            [erl_syntax:variable('Text'), fileOpenFormat(?MFA_SPEC)])])]),
-  RecordSetup2 =
-    erl_syntax:function(
-      erl_syntax:atom(record),
-      [erl_syntax:clause([erl_syntax:variable('Text'),
-                          erl_syntax:tuple([erl_syntax:atom(ok), erl_syntax:variable('Fd')])],
-                         none,
-                         [erl_syntax:application(
-                            erl_syntax:atom(file),
-                            erl_syntax:atom(write),
-                            [erl_syntax:variable('Fd'),
-                             erl_syntax:list([erl_syntax:variable('Text')])])])]),
+        "-export(['@MfaSpec@'/1]).",
+        "-import(proof_eval,[write_history/2,fix_trace/1,write_history/2])."]),
 
   %% Create monitor module.
   Fun =
     erl_syntax:function(
-      erl_syntax:atom(?MFA_SPEC), visit_forms(Ast, Opts)),
-  erl_syntax:revert_forms(Forms ++ [RecordSetup] ++ [RecordSetup2] ++ [Fun]).
+      erl_syntax:atom(?MFA_SPEC), visit_forms(Ast, Opts, Ast)),
+  erl_syntax:revert_forms(Forms ++ [Fun]).
 
 %% @private Visits SHMLnf formula nodes and generates the corresponding syntax
 %% tree describing one monitor (i.e. one formula is mapped to one monitor).
--spec visit_forms(Forms, Opts) -> Forms :: [erl_syntax:syntaxTree()]
+-spec visit_forms(Forms, Opts, Ast) -> Forms :: [erl_syntax:syntaxTree()]
   when Forms :: [formula()],
-       Opts :: options().
-visit_forms([], Opts) ->
+       Opts :: options(),
+       Ast :: [formula()].
+visit_forms([], Opts, _) ->
   % Generate catchall function clause pattern that matches Mod:Fun(Args) pattern
   % to return undefined. This is the case when no monitor should be attached to
   % said MFA.
@@ -410,7 +394,23 @@ visit_forms([], Opts) ->
     _ ->
       [erl_syntax:clause([erl_syntax:underscore()], none, [erl_syntax:atom(undefined)])]
   end;
-visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts) ->
+visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts, Ast) ->
+  TraceNameNum = 1,
+  TraceRecorder =
+    erl_syntax:match_expr(
+      erl_syntax:variable(traceNameFlatten(TraceNameNum)), erl_syntax:list([], none)),
+
+  FileName =
+    erl_syntax:match_expr(
+      erl_syntax:variable("FileName"),
+      erl_syntax:string(
+        io_lib:format("~p_History.txt", [Mod]))),
+  Proof_tree =
+    erl_syntax:match_expr(
+      erl_syntax:variable("Proof_tree"),
+      proof_eval:create_erl_syntax_proof_tree(
+        proof_eval:create_proof_tree(Ast))),
+
   % Unpack patterns and guard from MFA clause. The clause patterns are the
   % argument patterns used in the Mod:Fun(Args) invocation: these must be
   % encoded as {Mod, Fun, Args} tuples to be used as a singular pattern in
@@ -427,7 +427,11 @@ visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts) ->
   % Create the body for current function clause, consisting of a singular tagged
   % pair enclosing the monitor encoding as one anonymous function.
   Body =
-    erl_syntax:tuple([erl_syntax:atom(ok), erl_syntax:block_expr([visit_shml(Shml, Opts)])]),
+    erl_syntax:tuple([erl_syntax:atom(ok),
+                      erl_syntax:block_expr([TraceRecorder,
+                                             FileName,
+                                             Proof_tree,
+                                             visit_shml(Shml, Opts, TraceNameNum)])]),
 
   % Return function clause for {Mod, Fun, Args} with monitor implementation.
   case opts:verbose_opt(Opts) of
@@ -436,11 +440,15 @@ visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts) ->
       Log = create_log("Instrumenting monitor for MFA pattern '~p'.~n", [MfaVar], 'end'),
       Body0 =
         erl_syntax:tuple([erl_syntax:atom(ok),
-                          erl_syntax:block_expr([Log, visit_shml(Shml, Opts)])]),
+                          erl_syntax:block_expr([TraceRecorder,
+                                                 FileName,
+                                                 Proof_tree,
+                                                 Log,
+                                                 visit_shml(Shml, Opts, TraceNameNum)])]),
       Match = erl_syntax:match_expr(MfaVar, MfaTuple),
-      [erl_syntax:clause([Match], Guard, [Body0]) | visit_forms(Forms, Opts)];
+      [erl_syntax:clause([Match], Guard, [Body0]) | visit_forms(Forms, Opts, Ast)];
     _ ->
-      [erl_syntax:clause([MfaTuple], Guard, [Body]) | visit_forms(Forms, Opts)]
+      [erl_syntax:clause([MfaTuple], Guard, [Body]) | visit_forms(Forms, Opts, Ast)]
   end.
 
 %%  [erl_syntax:clause([MfaTuple], Guard, [Body]) | visit_forms(Forms, Opts)].
@@ -458,54 +466,86 @@ visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts) ->
 %%   }
 %%   {@item A SHMLnf n-ary conjunction is translated to a monitor n-ary choice.}
 %% }
--spec visit_shml(Shml, Opts) -> erl_syntax:syntaxTree()
+-spec visit_shml(Shml, Opts, TraceNameNum) -> erl_syntax:syntaxTree()
   when Shml :: af_shml(),
-       Opts :: options().
-visit_shml(_Node = {ff, _}, Opts) ->
+       Opts :: options(),
+       TraceNameNum :: integer().
+visit_shml(_Node = {ff, _}, Opts, TraceNameNum) ->
   ?TRACE("Visiting 'ff' node ~p.", [_Node]),
-
   % Create atom 'no' denoting the rejection monitoring verdict. This corresponds
   % to the SHMLnf violation verdict 'ff'.
+  % History = proof_eval:write_history(Trace5,FileName)
+  % proof_eval:prove_property(Proof_tree,History)
+  Fix_Trace =
+    erl_syntax:application(
+      erl_syntax:atom(proof_eval),
+      erl_syntax:atom(fix_trace),
+      [erl_syntax:variable(traceNameFlatten(TraceNameNum))]),
+
+  Writing =
+    erl_syntax:match_expr(
+      erl_syntax:variable("History"),
+      erl_syntax:application(
+        erl_syntax:atom(proof_eval),
+        erl_syntax:atom(write_history),
+        [Fix_Trace, erl_syntax:variable("FileName")])),
+
+  Verdict =
+    erl_syntax:application(
+      erl_syntax:atom(proof_eval),
+      erl_syntax:atom(prove_property),
+      [erl_syntax:variable("Proof_tree"), erl_syntax:variable("History")]),
+
   case opts:verbose_opt(Opts) of
     true ->
-      Log = create_log("Reached verdict 'no'.~n", [], no),
-      erl_syntax:block_expr([Log, erl_syntax:atom(no)]);
+      Log = create_log("Reached verdict '~p'.~n", [Verdict], no),
+      Log2 = create_log("<< Resulting History ~p >>~n", [Fix_Trace], no),
+      erl_syntax:block_expr([Log2, Writing, Log]);
     _ ->
-      erl_syntax:atom(no)
+      erl_syntax:block_expr([Writing, Verdict])
   end;
-visit_shml(Var = {var, _, Name}, Opts) ->
+visit_shml(Var = {var, _, Name}, Opts, TraceNameNum) ->
   ?TRACE("Visiting 'var' node ~p.", [Var]),
-
   % Create function application denoting the recursive call the monitor performs
   % when it reaches the recursive variable. This corresponds to the SHMLns
   % recursion variable.
   case opts:verbose_opt(Opts) of
     true ->
       Log = create_log("Unfolding rec. var. ~p.~n", [erl_syntax:atom(Name)], var),
-      erl_syntax:block_expr([Log, erl_syntax:application(Var, [])]);
+      erl_syntax:block_expr([Log,
+                             erl_syntax:application(Var,
+                                                    [erl_syntax:variable(traceNameFlatten(TraceNameNum))])]);
     _ ->
-      erl_syntax:application(Var, [])
+      erl_syntax:application(Var, [erl_syntax:variable(traceNameFlatten(TraceNameNum))])
   end;
-visit_shml(_Node = {max, _, Var = {var, _, _}, Shml}, Opts) ->
+visit_shml(_Node = {max, _, Var = {var, _, _}, Shml}, Opts, TraceNameNum) ->
   ?TRACE("Visiting 'max' node ~p.", [_Node]),
-
   % Create function clause containing monitor body.
-  Clause = erl_syntax:clause(none, [visit_shml(Shml, Opts)]),
+  Clause =
+    erl_syntax:clause([erl_syntax:variable(traceNameFlatten(TraceNameNum + 1))],
+                      none,
+                      [visit_shml(Shml, Opts, TraceNameNum + 1)]),
 
   % Create named anonymous function whose name provides the monitor with a
   % handle that allows it to call itself recursively. This corresponds to the
   % SHMLnf maximal fix-point operator. The named anonymous function is applied
   % immediately as soon as it is created, thereby executing the very first
   % recursion unfolding immediately.
-  erl_syntax:application(
-    erl_syntax:named_fun_expr(Var, [Clause]), []);
-visit_shml(_Node = {'or', _, _, ShmlSeq}, Opts) when is_list(ShmlSeq) ->
-  ?TRACE("Visiting 'and_~w' node ~p.", [length(ShmlSeq), _Node]),
+  Fun = erl_syntax:named_fun_expr(Var, [Clause]),
+  FunExpr =
+    erl_syntax:match_expr(
+      erl_syntax:variable('Rec'), Fun),
+  Application =
+    erl_syntax:application(
+      erl_syntax:variable('Rec'), [erl_syntax:variable(traceNameFlatten(TraceNameNum))]),
 
+  erl_syntax:block_expr([FunExpr, Application]);
+visit_shml(_Node = {'or', _, _, ShmlSeq}, Opts, TraceNameNum) when is_list(ShmlSeq) ->
+  ?TRACE("Visiting 'and_~w' node ~p.", [length(ShmlSeq), _Node]),
   % Create function clauses for all conjuncts in the n-ary conjunction. These
   % will be combined to form the function that permits a choice through its
   % guards.
-  Clauses = visit_shml_seq(ShmlSeq, Opts),
+  Clauses = visit_shml_seq(ShmlSeq, Opts, TraceNameNum),
 
   % Create catch-all function clause to which any unrecognized pattern will
   % default. The body of this function returns 'end', denoting the monitor
@@ -527,13 +567,12 @@ visit_shml(_Node = {'or', _, _, ShmlSeq}, Opts) when is_list(ShmlSeq) ->
   % (encoded as a function clause) corresponds to the action of each top
   % necessity specified in the SHMLnf n-ary conjunction.
   erl_syntax:fun_expr(Clauses ++ [CatchAllClause]);
-visit_shml(_Node = {'and', _, _, ShmlSeq}, Opts) when is_list(ShmlSeq) ->
+visit_shml(_Node = {'and', _, _, ShmlSeq}, Opts, TraceNameNum) when is_list(ShmlSeq) ->
   ?TRACE("Visiting 'and_~w' node ~p.", [length(ShmlSeq), _Node]),
-
   % Create function clauses for all conjuncts in the n-ary conjunction. These
   % will be combined to form the function that permits a choice through its
   % guards.
-  Clauses = visit_shml_seq(ShmlSeq, Opts),
+  Clauses = visit_shml_seq(ShmlSeq, Opts, TraceNameNum),
 
   % Create catch-all function clause to which any unrecognized pattern will
   % default. The body of this function returns 'end', denoting the monitor
@@ -564,38 +603,45 @@ visit_shml(_Node = {'and', _, _, ShmlSeq}, Opts) when is_list(ShmlSeq) ->
 %%
 %% Note: The specification of the SHMLnf grammar guarantees that each element in
 %% the list of conjuncts is a necessity (i.e., all sub-formulas are guarded).
--spec visit_shml_seq(ShmlSeq, Opts) -> [erl_syntax:syntaxTree()]
+-spec visit_shml_seq(ShmlSeq, Opts, TraceNameNum) -> [erl_syntax:syntaxTree()]
   when ShmlSeq :: af_shml_seq(),
-       Opts :: options().
-visit_shml_seq([Nec], Opts) ->
-  [visit_nec(Nec, Opts)];
-visit_shml_seq([Nec | ShmlSeq], Opts) ->
-  [visit_nec(Nec, Opts) | visit_shml_seq(ShmlSeq, Opts)].
+       Opts :: options(),
+       TraceNameNum :: integer().
+visit_shml_seq([Nec], Opts, TraceNameNum) ->
+  [visit_nec(Nec, Opts, TraceNameNum)];
+visit_shml_seq([Nec | ShmlSeq], Opts, TraceNameNum) ->
+  [visit_nec(Nec, Opts, TraceNameNum) | visit_shml_seq(ShmlSeq, Opts, TraceNameNum)].
 
 %% @private Visits the SHMLnf necessity 'nec' node and generates the syntax tree
 %% for a function clause describing the monitor action prefix. The clause is
 %% combined together with other such clauses (resulting from other necessities)
 %% under one function that describes a monitor choice between said necessities.
--spec visit_nec(Nec, Opts) -> erl_syntax:syntaxTree()
+-spec visit_nec(Nec, Opts, TraceNameNum) -> erl_syntax:syntaxTree()
   when Nec :: af_nec(),
-       Opts :: options().
-visit_nec(_Node = {nec, _, Act, Shml}, Opts) ->
+       Opts :: options(),
+       TraceNameNum :: integer().
+visit_nec(_Node = {nec, _, Act, Shml}, Opts, TraceNameNum) ->
   ?TRACE("Visiting 'nec' node ~p.", [_Node]),
-
   % Create monitor body.
-  Body = visit_shml(Shml, Opts),
+  Body = visit_shml(Shml, Opts, TraceNameNum + 1),
 
   % Visit action to obtain clause patterns and guard. In this particular case,
   % the list of patterns will only contain the trace pattern; meanwhile the
   % guard on said pattern is used as is to construct the clause pattern for the
   % function.
   {Patterns, Guard} = visit_act(Act),
-  % Create Recorder
-  Record =
-    erl_syntax:application(
-      erl_syntax:atom(record),
-      [erl_syntax:string(
-         io_lib:format("~p;", [proof_eval:visit_act_string(Act)]))]),
+
+  % Trace?NUM? = lists:append(TraceX, ["?Action?"]),
+  RecordTrace =
+    erl_syntax:match_expr(
+      erl_syntax:variable(traceNameFlatten(TraceNameNum + 1)),
+      erl_syntax:application(
+        erl_syntax:atom(lists),
+        erl_syntax:atom(append),
+        [erl_syntax:variable(traceNameFlatten(TraceNameNum)),
+         erl_syntax:list([erl_syntax:string(
+                            io_lib:format("~p", [proof_eval:visit_act_string(Act)]))])])),
+
   % Create function clause consisting of exactly one pattern and guard. The
   % pattern matches the singular trace event that is to be processed; the guard
   % allows refined matching to be performed dynamically whilst the function
@@ -607,9 +653,9 @@ visit_nec(_Node = {nec, _, Act, Shml}, Opts) ->
       EventVar = erl_syntax:variable('_E'),
       Log = create_log("Analyzing event ~p.~n", [EventVar], prf),
       Match = erl_syntax:match_expr(EventVar, hd(Patterns)),
-      erl_syntax:clause([Match], Guard, [Record, Log, Body]);
+      erl_syntax:clause([Match], Guard, [RecordTrace, Log, Body]);
     _ ->
-      erl_syntax:clause(Patterns, Guard, [Body])
+      erl_syntax:clause(Patterns, Guard, [RecordTrace, Body])
   end.
 
 %% @private Visits the action 'act' node to extract the pattern and guard from
@@ -910,12 +956,5 @@ format_error({Line, hml_lexer, Error}) ->
 %%% New stuff
 %%% ----------------------------------------------------------------------------
 
--spec fileOpenFormat(FileName) -> erl_syntax:syntaxTree() when FileName :: string().
-fileOpenFormat(FileName) ->
-  erl_syntax:application(
-    erl_syntax:atom(file),
-    erl_syntax:atom(open),
-    [erl_syntax:string(
-       io_lib:format("New~p.txt", [FileName])),
-     erl_syntax:list([erl_syntax:atom(append)])]).
-            
+traceNameFlatten(Num) when is_integer(Num) ->
+  lists:flatten(["Trace", integer_to_list(Num)]).
