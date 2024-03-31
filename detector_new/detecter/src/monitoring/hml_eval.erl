@@ -178,6 +178,9 @@
 %%          | and(<SHML list>) (a sequence of comma-separated conjuncts where
 %%                              each is itself a sub-formula <SHML> that however
 %%                              must start with a necessity [<ACTION>]<SHML>)
+%%          | or(<SHML list>) (a sequence of comma-separated disjunctions where
+%%                              each is itself a sub-formula <SHML> that however
+%%                              must start with a necessity [<ACTION>]<SHML>)
 %% '''
 %%       An action in a necessity `[<ACTION>]' can be one of the following:
 %%       {@ul
@@ -361,7 +364,7 @@ create_module(Ast, Module, Opts) ->
   {{YY, MM, DD}, {HH, Mm, SS}} = calendar:local_time(),
   Date = io_lib:format("~4B/~2B/~2..0B ~2..0B:~2..0B:~2..0B", [YY, MM, DD, HH, Mm, SS]),
 
-  % Generate module base and attribute meta information.
+  % Generate module base and attribute meta information with additonal imports.
   Forms =
     ?Q(["-module('@Module@').",
         "-author(\"detectEr\").",
@@ -395,16 +398,22 @@ visit_forms([], Opts, _) ->
       [erl_syntax:clause([erl_syntax:underscore()], none, [erl_syntax:atom(undefined)])]
   end;
 visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts, Ast) ->
+  % Generate TraceName Number to refrence new names for Trace identification.
   TraceNameNum = 1,
+
+  % Create The First Empty List Trace 
   TraceRecorder =
     erl_syntax:match_expr(
       erl_syntax:variable(traceNameFlatten(TraceNameNum)), erl_syntax:list([], none)),
 
+  % Create the FileName the Trace & History will be saved in
   FileName =
     erl_syntax:match_expr(
       erl_syntax:variable("FileName"),
       erl_syntax:string(
         io_lib:format("~p_History.txt", [Mod]))),
+
+  % Generate the ProofTree for proofing later and save it as code int the monitor
   Proof_tree =
     erl_syntax:match_expr(
       erl_syntax:variable("Proof_tree"),
@@ -476,12 +485,17 @@ visit_shml(_Node = {ff, _}, Opts, TraceNameNum) ->
   % to the SHMLnf violation verdict 'ff'.
   % History = proof_eval:write_history(Trace5,FileName)
   % proof_eval:prove_property(Proof_tree,History)
+
+  % an Error has occuered during testing this function fixes that issue.
+  % the Issue was that the Trace list was defaulting a none string variant which
+  % caused issues with the next part.
   Fix_Trace =
     erl_syntax:application(
       erl_syntax:atom(proof_eval),
       erl_syntax:atom(fix_trace),
       [erl_syntax:variable(traceNameFlatten(TraceNameNum))]),
 
+  % Run the function that handles the given new Trace, saves it to history and returns new History to be used. 
   Writing =
     erl_syntax:match_expr(
       erl_syntax:variable("History"),
@@ -490,6 +504,7 @@ visit_shml(_Node = {ff, _}, Opts, TraceNameNum) ->
         erl_syntax:atom(write_history),
         [Fix_Trace, erl_syntax:variable("FileName")])),
 
+  % Run the Prove Property function that will determine weather the property has been violated
   Verdict =
     erl_syntax:application(
       erl_syntax:atom(proof_eval),
@@ -499,7 +514,7 @@ visit_shml(_Node = {ff, _}, Opts, TraceNameNum) ->
   case opts:verbose_opt(Opts) of
     true ->
       Log = create_log("Reached verdict '~p'.~n", [Verdict], no),
-      Log2 = create_log("<< Resulting History ~p >>~n", [Fix_Trace], no),
+      Log2 = create_log("<< Resulting History ~p >>~n", [Fix_Trace], no), % who the history
       erl_syntax:block_expr([Log2, Writing, Log]);
     _ ->
       erl_syntax:block_expr([Writing, Verdict])
@@ -631,7 +646,7 @@ visit_nec(_Node = {nec, _, Act, Shml}, Opts, TraceNameNum) ->
   % function.
   {Patterns, Guard} = visit_act(Act),
 
-  % Trace?NUM? = lists:append(TraceX, ["?Action?"]),
+  % Takes the pevious trace name and appends it to the new trace name
   RecordTrace =
     erl_syntax:match_expr(
       erl_syntax:variable(traceNameFlatten(TraceNameNum + 1)),
@@ -953,7 +968,7 @@ format_error({Line, hml_lexer, Error}) ->
 %%  Ast.
 
 %%% ----------------------------------------------------------------------------
-%%% New stuff
+%%% Trace Name Syntax
 %%% ----------------------------------------------------------------------------
 
 traceNameFlatten(Num) when is_integer(Num) ->

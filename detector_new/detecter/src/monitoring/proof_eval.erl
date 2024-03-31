@@ -105,13 +105,15 @@
 -type action() :: string().
 -type trace() :: [action()].
 -type history() :: [trace()].
--type proof_return_types() :: ff | undefined | {atom(), ff}.
+-type proof_return_types() :: ff | undefined | {atom(), ff}. % Note {atom(), ff} is not used but i dont want to break anything so i left it.
 
 %%% ----------------------------------------------------------------------------
 %%% Trace Format Functions.
 %%% ----------------------------------------------------------------------------
 
-%% Takes an Act type and returns an object representing the Trace
+%%% visit_act_string() takes an action and return a new structure ment to be smaller
+%%% and ment to allow one to more easily see the difference between each trace.
+
 -spec visit_act_string(Act) -> any() when Act :: af_act().
 visit_act_string({fork, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
     {trace,
@@ -161,7 +163,12 @@ extract_act_string({op, _, Op, Var1, Var2}) ->
 extract_act_string({clause, _, List1, List2, List3}) ->
     {extract_act_string(List1), extract_act_string(List2), extract_act_string(List3)}.
 
-% Reads a file and returns a lists of lists of traces
+% read_env takes a file name and reads the Data and extracts the Traces compiled
+% Example data is 
+% Trace1 : ?Action1?;?Action2?;... \n
+% Trace2 : ... \n
+% ...
+% \n
 -spec read_env(File :: file:filename()) ->
                   {ok, Env :: [list()]} | {error, Error :: error_info()}.
 read_env(File) when is_list(File) ->
@@ -172,7 +179,7 @@ read_env(File) when is_list(File) ->
             throw({error, {?MODULE, Reason}})
     end.
 
-% Takes a list of bytes and splits it based on \n and ;
+% Given the List of aata read from the file it will split the list based on \n and ;
 -spec split_Bytes(Line) -> list() when Line :: [byte()].
 split_Bytes(Line) ->
     foreach(fun(H) -> string:tokens(H, ";") end, string:tokens(Line, "\n")).
@@ -183,12 +190,12 @@ foreach(F, [H | T]) ->
 foreach(_, []) ->
     [].
 
-% creates a tree based on the hml for proofing
+% Generates a proof tree based on the given parsed tree
 -spec create_proof_tree(Ast) -> Forms :: [pf_head()] when Ast :: [formula()].
 create_proof_tree(Ast) ->
     {head, visit_proof_forms(Ast)}.
 
-% goes through each of the forms
+% Goes through the Forms section of the parsed tree
 -spec visit_proof_forms(Forms) -> Forms :: [pf_formula()] when Forms :: [formula()].
 visit_proof_forms([]) ->
     [];
@@ -215,30 +222,20 @@ visit_proof_shml_seq([Nec]) ->
 visit_proof_shml_seq([Nec | ShmlSeq]) ->
     [visit_proof_nec(Nec) | visit_proof_shml_seq(ShmlSeq)].
 
-% nec has the Trace important
+% goes through the nec stucture of the trace that has the Action string. 
 -spec visit_proof_nec(Nec) -> pf_shml() when Nec :: af_nec().
 visit_proof_nec(_Node = {nec, _, Act, Shml}) ->
     Body = visit_proof_shml(Shml),
     Trace = io_lib:format("~p", [visit_act_string(Act)]),
     %io:format("Before: ~p~nAfter: ~p~n", [Shml,Body]),
-    {nec, flatten(Trace), Body}.
-
-% takes a lists of lists and returns a list
-flatten(X) ->
-    flatten(X, []).
-
-flatten([], Acc) ->
-    Acc;
-flatten([[] | T], Acc) ->
-    flatten(T, Acc);
-flatten([[_ | _] = H | T], Acc) ->
-    flatten(T, flatten(H, Acc));
-flatten([H | T], Acc) ->
-    flatten(T, Acc ++ [H]).
+    {nec, lists:flatten(Trace), Body}.
 
 %%% ----------------------------------------------------------------------------
 %%% Proof System Functions.
 %%% ----------------------------------------------------------------------------
+
+% prove_property() takes the genereated prooftree and a Lists of Lists Histroy
+% and goes through the tree eventually returning a no or undefined result.
 
 -spec prove_property(Proof_tree, History) -> no | undefined
     when Proof_tree :: [pf_head()],
@@ -247,6 +244,10 @@ prove_property(_Proof_tree = {head, Form_seq}, History) ->
     %?TRACE("Proving Property at -HEAD- ~p.",[Form_seq]),
     prove_property_form_seq(Form_seq, History, dict:new()).
 
+
+% RecRefDic is the Recersive element Refrence Dictionary that refrences the shml from a given Max node
+
+% prove_property_form_seq goes through the first set of different properties one tree might have.
 -spec prove_property_form_seq(List, History, RecRefDic) -> no | undefined
     when List :: [pf_formula()],
          History :: history(),
@@ -266,6 +267,12 @@ prove_property_form_seq(_List = [_Head = {form, Shml} | Rest], History, RecRefDi
            prove_property_form_seq(Rest, History, RecRefDic)
     end.
 
+
+% prove_shml() goes through the Shml nodes and does the appropriate logic 
+% Max node will add its SHMl to the Dictionary RecRefDic with its atom as the refrence
+% Var node will continue opening the tree using that refrence.
+% 'and' and 'or' will do the appropriate functions from determining the result.
+% and ff will result in an ff being returned.
 -spec prove_shml(Shml, History, RecRefDic) -> proof_return_types()
     when Shml :: pf_shml(),
          History :: history(),
@@ -288,6 +295,8 @@ prove_shml({'or', ShmlSeq}, History, RecRefDic) ->
     %?TRACE("Proving 'or' node~n Tree: ~p~n.",[ShmlSeq]),
     prove_shml_seq_or(ShmlSeq, History, RecRefDic).
 
+
+% prove_shml_seq_and() will continue to prove based on the Shml and then run an analysis check on the given result. 
 -spec prove_shml_seq_and(Shml_seq, History, RecRefDic) -> proof_return_types()
     when Shml_seq :: pf_shml_seq(),
          History :: history(),
@@ -300,6 +309,11 @@ prove_shml_seq_and([Nec | Shml_seq], History, RecRefDic) ->
     Result = prove_nec(Nec, History, RecRefDic),
     %?TRACE("Proving 'and' -continued- ~nResult ~p.",[Result]),
     prove_shml_seq_and_analysis(Result, Shml_seq, History, RecRefDic).
+
+% prove_shml_seq_and_analysis() will
+% given ff -> ff
+% given undefined & Next_Shml exists -> try running prove shml on the Next_Shml
+% given undefeined & Next_Shml is empty -> undefined
 
 -spec prove_shml_seq_and_analysis(Result, Next_Shml, History, RecRefDic) ->
                                      proof_return_types()
@@ -314,6 +328,7 @@ prove_shml_seq_and_analysis(undefined, [], _, _) ->
 prove_shml_seq_and_analysis(undefined, Next_Shml, History, RecRefDic) ->
     prove_shml_seq_and(Next_Shml, History, RecRefDic).
 
+% prove_shml_seq_or will run the prove Nec on the given shml and check using the analysis function
 -spec prove_shml_seq_or(Shml_seq, History, RecRefDic) -> proof_return_types()
     when Shml_seq :: pf_shml_seq(),
          History :: history(),
@@ -327,6 +342,10 @@ prove_shml_seq_or([Nec | Shml_seq], History, RecRefDic) ->
     %?TRACE("Proving 'or' -continued- ~nResult ~p.",[Result]),
     prove_shml_seq_or_analysis(Result, Shml_seq, History, RecRefDic).
 
+% prove_shml_seq_or_analysis() will
+% given the result and an empty shml -> Result
+% given undefined -> undefined
+% given ff and Next_Shml exists -> try Next_Shml
 -spec prove_shml_seq_or_analysis(Result, Next_ShmlSeq, History, RecRefDic) ->
                                     proof_return_types()
     when Result :: proof_return_types(),
@@ -340,6 +359,9 @@ prove_shml_seq_or_analysis(undefined, _, _, _) ->
 prove_shml_seq_or_analysis(ff, Next_ShmlSeq, History, RecRefDic) ->
     prove_shml_seq_or(Next_ShmlSeq, History, RecRefDic).
 
+% prove_nec() will check that the resulting Action matches an Action in the History
+% if the result is the emtpy list it will end here.
+% else it continues on.
 -spec prove_nec(Nec, History, RecRefDic) -> proof_return_types()
     when Nec :: pf_nec(),
          History :: history(),
@@ -353,8 +375,10 @@ prove_nec(_Nec = {nec, Trace, Shml}, History, RecRefDic) ->
            prove_shml(Shml, Result, RecRefDic)
     end.
 
--spec sub_History(TraceList, Trace) -> {Result, boolean()}
-    when TraceList :: history(),
+% sub_History() takes a History and a Trace, and returns the History with the Trace given removed
+% or the empty list of no Trace was found
+-spec sub_History(History, Trace) -> {Result, boolean()}
+    when History :: history(),
          Trace :: trace(),
          Result :: history().
 sub_History(TraceList, Trace) ->
@@ -378,6 +402,13 @@ sub_Histories([[Head_EnvTrace | Rest_EnvTrace] | Rest_EnvTraces], Trace) ->
            sub_Histories(Rest_EnvTraces, Trace)
     end.
 
+%%% ----------------------------------------------------------------------------
+%%% Synthesising specific functions.
+%%% ----------------------------------------------------------------------------
+
+% Takes a given proof tree and converts it to a erl_syntax version for synthesizing.
+-spec create_erl_syntax_proof_tree(Shml) -> erl_syntax:syntaxTree()
+    when Shml :: pf_shml() | pf_nec() | pf_head() | pf_formula().
 create_erl_syntax_proof_tree({ff}) ->
     erl_syntax:tuple([erl_syntax:atom(ff)]);
 create_erl_syntax_proof_tree({var, Atom}) ->
@@ -402,11 +433,15 @@ create_erl_syntax_proof_tree({nec, Act, Shml}) ->
                       erl_syntax:string(Act),
                       create_erl_syntax_proof_tree(Shml)]).
 
+% manages the SHML_SEQ section of the proof_tree
+-spec create_erl_syntax_proof_tree_seq(Shml_seq) -> erl_syntax:syntaxTree()
+    when Shml_seq :: pf_shml_seq().
 create_erl_syntax_proof_tree_seq([Shml]) ->
     [create_erl_syntax_proof_tree(Shml)];
 create_erl_syntax_proof_tree_seq([Shml | Shml_seq]) ->
     [create_erl_syntax_proof_tree(Shml) | create_erl_syntax_proof_tree_seq(Shml_seq)].
 
+% add_to_history takes a history and a trace and and adds the Trace to the history 
 -spec add_to_history(TraceList, Trace) -> Result
     when TraceList :: history(),
          Trace :: trace(),
@@ -423,11 +458,16 @@ add_to_history([HeadTrace | RestHistory], Trace) ->
            [HeadTrace | add_to_history(RestHistory, Trace)]
     end.
 
+% write_history takes a Trace and file name, 
+% Read the file to get the history, 
+% adds the Trace to the history,
+% add the Trace to the file with the history if the new history was changed,
+% and returns the new history.
 -spec write_history(New_Trace, FileName) -> New_History
     when New_Trace :: trace(),
          FileName :: string(),
          New_History :: history().
-write_history(New_Trace, FileName)  ->
+write_history(New_Trace, FileName) ->
     {ok, Fd} = file:open(FileName, [append]),
     {ok, Old_History} = read_env(FileName),
     New_History = add_to_history(Old_History, New_Trace),
@@ -441,15 +481,16 @@ write_history(New_Trace, FileName)  ->
            New_History
     end.
 
-
+% format_trace_for_writing() adds ; to the Trace bewteen each action
+-spec format_trace_for_writing([string()]) -> [string()].
 format_trace_for_writing([]) ->
     [];
-format_trace_for_writing([Head|Rest]) ->
-    [Head,";"|format_trace_for_writing(Rest)].
+format_trace_for_writing([Head | Rest]) ->
+    [Head, ";" | format_trace_for_writing(Rest)].
 
-
-% I noticed that the Trace isnt converting to correct single String formats so this should flattens the List to the correct format.
+% flattens each action to be a string
+-spec fix_trace(List :: [list()]) -> List :: [list()].
 fix_trace([]) ->
-        [];
-fix_trace([Head|Rest]) ->
-        [lists:flatten(Head)|fix_trace(Rest)].
+    [];
+fix_trace([Head | Rest]) ->
+    [lists:flatten(Head) | fix_trace(Rest)].
