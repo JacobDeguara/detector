@@ -25,15 +25,14 @@ start(N) ->
 -spec loop(N :: integer()) -> no_return().
 loop(N) ->
     receive
-        {Clt, {rec, _ActType = {req}}} ->
-            Clt ! {ok, req},
-            loop(N);
-        {Clt, {rec, _ActType = {msg}}} ->
+        {Clt, {rec, _ActType = msg}} ->
             Clt ! {ok, msg},
             loop(N);
-        {Clt, {rec, _ActType = {alloc}}} ->
+        {Clt, {rec, _ActType = alloc}} ->
+            Clt ! {ok, special},
             Clt ! {ok, alloc},
             loop(N);
-        {Clt, {rec, _ActType = {close}}} ->
+        {Clt, {rec, _ActType = close}} ->
+            Clt ! {ok, special},
             Clt ! {ok, closing}
     end.

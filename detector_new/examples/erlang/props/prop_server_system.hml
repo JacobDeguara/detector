@@ -6,13 +6,11 @@ monitor
       and([_ ? {_, {rec, {_}}}]
         and(
           [_:_ ! {ok, msg}]X,
-          [_:_ ! {ok, req}]
-          and([_ ? {_, {rec, {_}}}]
+          [_:_ ! {ok, special}]
             or(
               [_:_ ! {ok, alloc}]ff,
               [_:_ ! {ok, closing}]ff
             )
-          )
         )
       )
     )
