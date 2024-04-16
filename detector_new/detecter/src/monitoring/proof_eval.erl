@@ -8,12 +8,11 @@
 
 -include("log.hrl").
 
--export([visit_act_string/1, read_env/1, create_proof_tree/1]).
+-export([convert_act_to_format/1, read_history/1, format_binary_to_history/1]).
 -export([prove_property/2]).
 -export([create_erl_syntax_proof_tree/1]).
 -export([write_history/2]).
--export([sub/2]).
--export([fix_trace/1]).
+-export([get_action/1]).
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -69,393 +68,324 @@
 
 %% Error list.
 
--type af_ff() :: {ff, line()}.
--type af_var() :: {var, line(), atom()}.
--type af_max() :: {max, line(), af_var(), af_shml()}.
--type af_n_and() :: {'and', line(), arity(), af_shml_seq()}.
--type af_n_or() :: {'or', line(), arity(), af_shml_seq()}.
--type af_nec() :: {nec, line(), af_act(), af_shml()}.
--type af_shml() :: af_ff() | af_var() | af_max() | af_n_and() | af_n_or().
--type af_shml_seq() :: [af_nec()].
--type formula() :: {form, line(), af_mfa(), af_shml()}.
--type af_mfa() :: {mfa, line(), module(), atom(), arity(), erl_parse:abstract_clause()}.
--type af_fork_act() :: {fork, line(), af_var(), af_var(), af_mfa()}.
--type af_init_act() :: {init, line(), af_var(), af_var(), af_mfa()}.
--type af_exit_act() :: {exit, line(), af_var(), erl_parse:abstract_clause()}.
--type af_send_act() :: {send, line(), af_var(), erl_parse:abstract_clause()}.
--type af_recv_act() :: {recv, line(), af_var(), erl_parse:abstract_clause()}.
--type af_user_act() :: {user, line(), erl_parse:abstract_clause()}.
--type af_act() ::
-    af_fork_act() |
-    af_init_act() |
-    af_exit_act() |
-    af_send_act() |
-    af_recv_act() |
-    af_user_act().
--type pf_ff() :: {ff}.
--type pf_var() :: {var, atom()}.
--type pf_max() :: {max, pf_var(), pf_shml()}.
--type pf_n_and() :: {'and', pf_shml_seq()}.
--type pf_n_or() :: {'or', pf_shml_seq()}.
--type pf_nec() :: {nec, pf_act(), pf_shml()}.
--type pf_shml() :: pf_ff() | pf_var() | pf_max() | pf_n_and() | pf_n_or().
--type pf_shml_seq() :: [pf_nec()].
--type pf_act() :: string().
--type pf_formula() :: {form, pf_shml()}.
--type pf_head() :: {head, [pf_formula()]}.
 -type action() :: string().
 -type trace() :: [action()].
 -type history() :: [trace()].
--type proof_return_types() ::
-    ff |
-    undefined |
-    {atom(),
-     ff}. % Note {atom(), ff} is not used but i dont want to break anything so i left it.
+-type proof_return_types() :: ff | undefined.
 
 %%% ----------------------------------------------------------------------------
 %%% Trace Format Functions.
 %%% ----------------------------------------------------------------------------
 
-%%% visit_act_string() takes an action and return a new structure ment to be smaller
-%%% and ment to allow one to more easily see the difference between each trace.
+%%% convert_act_to_format/1 takes an action from maxShml and Shmlnf
+%%% the result should be {trace, '~~~', ACTION, {['~~~',...], ['~~~',...], ['~~~',...]}}
+%%% A format of maxShml would have; {act,_,ACT} | {act,_,ACT,Clause} result in using the convert_act_to_format/2
 
--spec visit_act_string(Act) -> any() when Act :: af_act().
-visit_act_string({fork, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
+-spec convert_act_to_format(Act) -> any() when Act :: any().
+convert_act_to_format({fork, _, Var0, Var1, {_, _, Mod, Fun, _, Clause}}) ->
     {trace,
-     extract_act_string(Var0),
+     clause_to_format(Var0),
      spawn,
-     extract_act_string(Var1),
+     clause_to_format(Var1),
      Mod,
      Fun,
-     extract_act_string(Clause)};
-visit_act_string({init, _, Var0, Var1, {mfa, _, Mod, Fun, _, Clause}}) ->
+     clause_to_format(Clause)};
+convert_act_to_format({init, _, Var0, Var1, {_, _, Mod, Fun, _, Clause}}) ->
     {trace,
-     extract_act_string(Var0),
+     clause_to_format(Var0),
      init,
-     extract_act_string(Var1),
+     clause_to_format(Var1),
      Mod,
      Fun,
-     extract_act_string(Clause)};
-visit_act_string({exit, _, Var, Clause}) ->
-    {exit, extract_act_string(Var), extract_act_string(Clause)};
-visit_act_string({send, _, Var1, Var2, Clause}) ->
+     clause_to_format(Clause)};
+convert_act_to_format({exit, _, Var, Clause}) ->
+    {exit, clause_to_format(Var), clause_to_format(Clause)};
+convert_act_to_format({send, _, Var1, Var2, Clause}) ->
+    {trace, clause_to_format(Var1), send, clause_to_format(Var2), clause_to_format(Clause)};
+convert_act_to_format({recv, _, Var, Clause}) ->
+    {trace, clause_to_format(Var), 'receive', clause_to_format(Clause)};
+convert_act_to_format({user, _, Clause}) ->
+    {user, clause_to_format(Clause)};
+convert_act_to_format({act, _, Act}) ->
+    convert_act_to_format(Act, []);
+convert_act_to_format({act, _, Act, ExtraClause}) ->
+    convert_act_to_format(Act, ExtraClause).
+
+%%% convert_act_to_format/2 takes an action from maxShml and its Extra Clause to replicate the Clause of Shmlnf parser
+%%% the result should be the same as if it was parsed using Shmlnf
+%%% possible difference is possible as the action wasnt fully realized
+
+-spec convert_act_to_format(Act, ExtraClause :: any()) -> any() when Act :: any().
+convert_act_to_format({fork, _, Var0, Var1, {mfargs, _, Mod, Fun, Clause}},
+                      ExtraClause) ->
     {trace,
-     extract_act_string(Var1),
+     clause_to_format(Var0),
+     spawn,
+     clause_to_format(Var1),
+     Mod,
+     Fun,
+     clause_to_format({clause, 1, Clause, ExtraClause, []})};
+convert_act_to_format({init, _, Var0, Var1, {mfargs, _, Mod, Fun, Clause}},
+                      ExtraClause) ->
+    {trace,
+     clause_to_format(Var0),
+     init,
+     clause_to_format(Var1),
+     Mod,
+     Fun,
+     clause_to_format({clause, 1, Clause, ExtraClause, []})};
+convert_act_to_format({exit, _, Var, Clause}, ExtraClause) ->
+    {exit, clause_to_format(Var), clause_to_format({clause, 1, Clause, ExtraClause, []})};
+convert_act_to_format({send, _, Var1, Var2, Clause}, ExtraClause) ->
+    {trace,
+     clause_to_format(Var1),
      send,
-     extract_act_string(Var2),
-     extract_act_string(Clause)};
-visit_act_string({recv, _, Var, Clause}) ->
-    {trace, extract_act_string(Var), 'receive', extract_act_string(Clause)};
-visit_act_string({user, _, Clause}) ->
-    {user, extract_act_string(Clause)}.
+     clause_to_format(Var2),
+     clause_to_format({clause, 1, Clause, ExtraClause, []})};
+convert_act_to_format({recv, _, Var, Clause}, ExtraClause) ->
+    {trace,
+     clause_to_format(Var),
+     'receive',
+     clause_to_format({clause, 1, Clause, ExtraClause, []})}.
 
-%% Takes simple sets of Clause types and returns an object representing the Trace
--spec extract_act_string(Any) -> any() when Any :: list() | map().
-extract_act_string({var, _, String}) ->
+%%% clause_to_format/1 takes a few different formats and just takes
+%%% the important Names, lists or important information for the convertion
+
+-spec clause_to_format(Any) -> any() when Any :: list() | map().
+clause_to_format({var, _, String}) ->
     String;
-extract_act_string({atom, _, String}) ->
+clause_to_format({atom, _, String}) ->
     String;
-extract_act_string([]) ->
+clause_to_format([]) ->
     [];
-extract_act_string([Head]) ->
-    extract_act_string(Head);
-extract_act_string([Head | Rest]) ->
-    [extract_act_string(Head) | extract_act_string(Rest)];
-extract_act_string({tuple, _, List}) ->
-    extract_act_string(List);
-extract_act_string({op, _, Op, Var1, Var2}) ->
-    {Op, extract_act_string(Var1), extract_act_string(Var2)};
-extract_act_string({clause, _, List1, List2, List3}) ->
-    {extract_act_string(List1), extract_act_string(List2), extract_act_string(List3)}.
-
-% read_env takes a file name and reads the Data and extracts the Traces compiled
-% Example data is
-% Trace1 : ?Action1?;?Action2?;... \n
-% Trace2 : ... \n
-% ...
-% \n
--spec read_env(File :: file:filename()) ->
-                  {ok, Env :: [list()]} | {error, Error :: error_info()}.
-read_env(File) when is_list(File) ->
-    case file:read_file(File) of
-        {ok, Bytes} ->
-            {ok, split_Bytes(binary_to_list(Bytes))};
-        {error, Reason} ->
-            throw({error, {?MODULE, Reason}})
-    end.
-
-% Given the List of aata read from the file it will split the list based on \n and ;
--spec split_Bytes(Line) -> list() when Line :: [byte()].
-split_Bytes(Line) ->
-    foreach(fun(H) -> string:tokens(H, ";") end, string:tokens(Line, "\n")).
-
-% Applies a function to a list
-foreach(F, [H | T]) ->
-    [F(H) | foreach(F, T)];
-foreach(_, []) ->
-    [].
-
-% Generates a proof tree based on the given parsed tree
--spec create_proof_tree(Ast) -> Forms :: [pf_head()] when Ast :: [formula()].
-create_proof_tree(Ast) ->
-    {head, visit_proof_forms(Ast)}.
-
-% Goes through the Forms section of the parsed tree
--spec visit_proof_forms(Forms) -> Forms :: [pf_formula()] when Forms :: [formula()].
-visit_proof_forms([]) ->
-    [];
-visit_proof_forms([{form, _, _, Shml} | Forms]) ->
-    [{form, visit_proof_shml(Shml)} | visit_proof_forms(Forms)].
-
-% Takes the Shml types and returns a simpler version
--spec visit_proof_shml(Shml) -> pf_shml() when Shml :: af_shml().
-visit_proof_shml(_Node = {ff, _}) ->
-    {ff};
-visit_proof_shml(Var = {var, _, Name}) ->
-    {var, Name};
-visit_proof_shml(_Node = {max, _, _Var = {var, _, Name}, Shml}) ->
-    {max, {var, Name}, visit_proof_shml(Shml)};
-visit_proof_shml(_Node = {'or', _, _, ShmlSeq}) when is_list(ShmlSeq) ->
-    {'or', visit_proof_shml_seq(ShmlSeq)};
-visit_proof_shml(_Node = {'and', _, _, ShmlSeq}) when is_list(ShmlSeq) ->
-    {'and', visit_proof_shml_seq(ShmlSeq)}.
-
-% goes through the list of shml sequenses
--spec visit_proof_shml_seq(ShmlSeq) -> [pf_shml()] when ShmlSeq :: af_shml_seq().
-visit_proof_shml_seq([Nec]) ->
-    [visit_proof_nec(Nec)];
-visit_proof_shml_seq([Nec | ShmlSeq]) ->
-    [visit_proof_nec(Nec) | visit_proof_shml_seq(ShmlSeq)].
-
-% goes through the nec stucture of the trace that has the Action string.
--spec visit_proof_nec(Nec) -> pf_shml() when Nec :: af_nec().
-visit_proof_nec(_Node = {nec, _, Act, Shml}) ->
-    Body = visit_proof_shml(Shml),
-    Trace = io_lib:format("~p", [visit_act_string(Act)]),
-    %io:format("Before: ~p~nAfter: ~p~n", [Shml,Body]),
-    {nec, lists:flatten(Trace), Body}.
+clause_to_format([Head]) ->
+    clause_to_format(Head);
+clause_to_format([Head | Rest]) ->
+    [clause_to_format(Head) | clause_to_format(Rest)];
+clause_to_format({tuple, _, List}) ->
+    clause_to_format(List);
+clause_to_format({op, _, Op, Var1, Var2}) ->
+    {Op, clause_to_format(Var1), clause_to_format(Var2)};
+clause_to_format({clause, _, List1, List2, List3}) ->
+    {clause_to_format(List1), clause_to_format(List2), clause_to_format(List3)}.
 
 %%% ----------------------------------------------------------------------------
 %%% Proof System Functions.
 %%% ----------------------------------------------------------------------------
 
-% prove_property() takes the genereated prooftree and a Lists of Lists Histroy
-% and goes through the tree eventually returning a no or undefined result.
+%%% prove_property/2 takes the Ast of a maxShml parser and the a history to
+%%% prove a property given the history given.
+%%% it will result in a no meaning the property is violated by the history of the system
+%%% or undefined meaning the property has not been violated by the given history
 
--spec prove_property(Proof_tree, History) -> no | undefined
-    when Proof_tree :: [pf_head()],
+-spec prove_property(Ast, History) -> no | undefined
+    when Ast :: any(),
          History :: history().
-prove_property(_Proof_tree = {head, Form_seq}, History) ->
-    %?TRACE("Proving Property at -HEAD- ~p.",[Form_seq]),
-    prove_property_form_seq(Form_seq, History, dict:new()).
+prove_property(Ast, History) ->
+    prove_property_form_seq(Ast,
+                            History,
+                            dict:new()).    %%% Adding the dictionary is important as it saves the max trees needed for recursion
 
-% RecRefDic is the Recersive element Refrence Dictionary that refrences the shml from a given Max node
+%%% prove_property_form_seq/3 is used to Test each property in a given Ast tree
+%%% given that one violates the property it will return a violation.
+%%% each forms are of this format :: {form, _, _, Shml}
 
-% prove_property_form_seq goes through the first set of different properties one tree might have.
 -spec prove_property_form_seq(List, History, RecRefDic) -> no | undefined
-    when List :: [pf_formula()],
+    when List :: [any()],
          History :: history(),
          RecRefDic :: dict:dict().
-prove_property_form_seq(_List = [_Head = {form, Shml}], History, RecRefDic) ->
-    Result = prove_shml(Shml, History, RecRefDic),
-    if Result == ff ->
-           no;
-       true ->
-           undefined
+prove_property_form_seq(_List = [_Head = {form, _, _, Shml}], History, RecRefDic) ->
+    case prove_shml(Shml, History, RecRefDic) of
+        ff ->
+            no;
+        tt ->
+            undefined
     end;
-prove_property_form_seq(_List = [_Head = {form, Shml} | Rest], History, RecRefDic) ->
-    Result = prove_shml(Shml, History, RecRefDic),
-    if Result == ff ->
-           no;
-       true ->
-           prove_property_form_seq(Rest, History, RecRefDic)
+prove_property_form_seq(_List = [_Head = {form, _, _, Shml} | Forms],
+                        History,
+                        RecRefDic) ->
+    case prove_shml(Shml, History, RecRefDic) of
+        ff ->
+            no;
+        tt ->
+            prove_property_form_seq(Forms, History, RecRefDic)
     end.
 
-% prove_shml() goes through the Shml nodes and does the appropriate logic
-% Max node will add its SHMl to the Dictionary RecRefDic with its atom as the refrence
-% Var node will continue opening the tree using that refrence.
-% 'and' and 'or' will do the appropriate functions from determining the result.
-% and ff will result in an ff being returned.
--spec prove_shml(Shml, History, RecRefDic) -> proof_return_types()
-    when Shml :: pf_shml(),
+%%% prove_shml/3 takes the Nodes and applies the correct logic to the given node
+%%% Shml formats are ; {ff, _} | {tt, _} | {var, _, Name} | {max, _, _Var = {var, _, Name}, Shml}
+%%% {nec, _, Act, Shml} | {'and', _, Shml1, Shml2} | {'or', _, Shml1, Shml2}
+%%% 'ff' & 'tt' node will return themselves,
+%%% 'max' node will save the tree in the dict with the Name as the key
+%%% and 'var' will call that tree and recurse.
+%%% 'nec' node holds a given action and will be followed through substituting from the history
+%%% 'and' and 'or' nodes will do their respective logic
+
+-spec prove_shml(Shml, History, RecRefDic) -> ff | tt
+    when Shml :: any(),
          History :: history(),
          RecRefDic :: dict:dict().
-prove_shml({ff}, _ENV, _) ->
-    %?TRACE("Proving 'ff' Leaf node~n.",[]),
+prove_shml(_Node = {ff, _}, _ENV, _) ->
+    %?TRACE("Proving 'ff' Leaf node ~p.~n", [_Node]),
     ff;
-prove_shml({var, Var}, History, RecRefDic) ->
-    Rec = dict:fetch(Var, RecRefDic),
-    %?TRACE("Proving 'var' Leaf node~n Opening Tree: ~p~n.",[Rec]),
+prove_shml(_Node = {tt, _}, _ENV, _) ->
+    %?TRACE("Proving 'ff' Leaf node ~p.~n", [_Node]),
+    tt;
+prove_shml(_Var = {var, _, Name}, History, RecRefDic) ->
+    Rec = dict:fetch(Name, RecRefDic),
+    %?TRACE("Proving 'var' Leaf node ~p.~n Refrenced Tree:~p.~n", [_Var, Rec]),
     prove_shml(Rec, History, RecRefDic);
-prove_shml(_Max = {max, _Var_ob = {var, Var}, Shml}, History, RecRefDic) ->
-    %?TRACE("Proving 'max' node~n Tree: ~p~n.",[Shml]),
-    NewRecRefDic = dict:store(Var, Shml, RecRefDic),
+prove_shml(_Max = {max, _, _Var = {var, _, Name}, Shml}, History, RecRefDic) ->
+    %?TRACE("Proving 'max' node~p.~n Dictionary Refrence ~p.~n", [_Max, _Var]),
+    NewRecRefDic = dict:store(Name, Shml, RecRefDic),
     prove_shml(Shml, History, NewRecRefDic);
-prove_shml({'and', ShmlSeq}, History, RecRefDic) ->
-    %?TRACE("Proving 'and' node~n Tree: ~p~n.",[ShmlSeq]),
-    prove_shml_seq_and(ShmlSeq, History, RecRefDic);
-prove_shml({'or', ShmlSeq}, History, RecRefDic) ->
-    %?TRACE("Proving 'or' node~n Tree: ~p~n.",[ShmlSeq]),
-    prove_shml_seq_or(ShmlSeq, History, RecRefDic).
-
-% prove_shml_seq_and() will continue to prove based on the Shml and then run an analysis check on the given result.
--spec prove_shml_seq_and(Shml_seq, History, RecRefDic) -> proof_return_types()
-    when Shml_seq :: pf_shml_seq(),
-         History :: history(),
-         RecRefDic :: dict:dict().
-prove_shml_seq_and([Nec], History, RecRefDic) ->
-    Result = prove_nec(Nec, History, RecRefDic),
-    %?TRACE("Proving 'and' -continued- ~nResult ~p.",[Result]),
-    Result;
-prove_shml_seq_and([Nec | Shml_seq], History, RecRefDic) ->
-    Result = prove_nec(Nec, History, RecRefDic),
-    %?TRACE("Proving 'and' -continued- ~nResult ~p.",[Result]),
-    prove_shml_seq_and_analysis(Result, Shml_seq, History, RecRefDic).
-
-% prove_shml_seq_and_analysis() will
-% given ff -> ff
-% given undefined & Next_Shml exists -> try running prove shml on the Next_Shml
-% given undefeined & Next_Shml is empty -> undefined
-
--spec prove_shml_seq_and_analysis(Result, Next_Shml, History, RecRefDic) ->
-                                     proof_return_types()
-    when Result :: proof_return_types(),
-         Next_Shml :: pf_shml_seq(),
-         History :: history(),
-         RecRefDic :: dict:dict().
-prove_shml_seq_and_analysis(ff, _, _, _) ->
-    ff;
-prove_shml_seq_and_analysis(undefined, [], _, _) ->
-    undefined;
-prove_shml_seq_and_analysis(undefined, Next_Shml, History, RecRefDic) ->
-    prove_shml_seq_and(Next_Shml, History, RecRefDic).
-
-% prove_shml_seq_or will run the prove Nec on the given shml and check using the analysis function
--spec prove_shml_seq_or(Shml_seq, History, RecRefDic) -> proof_return_types()
-    when Shml_seq :: pf_shml_seq(),
-         History :: history(),
-         RecRefDic :: dict:dict().
-prove_shml_seq_or([Nec], History, RecRefDic) ->
-    Result = prove_nec(Nec, History, RecRefDic),
-    %?TRACE("Proving 'or' -continued- ~nResult ~p.",[Result]),
-    Result;
-prove_shml_seq_or([Nec | Shml_seq], History, RecRefDic) ->
-    Result = prove_nec(Nec, History, RecRefDic),
-    %?TRACE("Proving 'or' -continued- ~nResult ~p.",[Result]),
-    prove_shml_seq_or_analysis(Result, Shml_seq, History, RecRefDic).
-
-% prove_shml_seq_or_analysis() will
-% given the result and an empty shml -> Result
-% given undefined -> undefined
-% given ff and Next_Shml exists -> try Next_Shml
--spec prove_shml_seq_or_analysis(Result, Next_ShmlSeq, History, RecRefDic) ->
-                                    proof_return_types()
-    when Result :: proof_return_types(),
-         Next_ShmlSeq :: pf_shml_seq(),
-         History :: history(),
-         RecRefDic :: dict:dict().
-prove_shml_seq_or_analysis(Result, [], _, _) ->
-    Result;
-prove_shml_seq_or_analysis(undefined, _, _, _) ->
-    undefined;
-prove_shml_seq_or_analysis(ff, Next_ShmlSeq, History, RecRefDic) ->
-    prove_shml_seq_or(Next_ShmlSeq, History, RecRefDic).
-
-% prove_nec() will check that the resulting Action matches an Action in the History
-% if the result is the emtpy list it will end here.
-% else it continues on.
--spec prove_nec(Nec, History, RecRefDic) -> proof_return_types()
-    when Nec :: pf_nec(),
-         History :: history(),
-         RecRefDic :: dict:dict().
-prove_nec(_Nec = {nec, Trace, Shml}, History, RecRefDic) ->
-    %?TRACE("Proving 'nec' node with Trace ~p,~n ENV: ~p.",[Trace,History]),
-    Result = sub_Histories(History, Trace),
-    if Result == [] ->
-           undefined;
-       true ->
-           prove_shml(Shml, Result, RecRefDic)
-    end.
-
-% sub_History() takes a History and a Trace, and returns the History with the Trace given removed
-% or the empty list of no Trace was found
--spec sub_History(History, Trace) -> {Result, boolean()}
-    when History :: history(),
-         Trace :: trace(),
-         Result :: history().
-sub_History(TraceList, Trace) ->
-    Result = sub_Histories(TraceList, Trace),
-    {Result, Result == []}.
-
--spec sub_Histories(TraceList, Trace) -> Result
-    when TraceList :: history(),
-         Trace :: trace(),
-         Result :: history().
-sub_Histories([[Head_EnvTrace | Rest_EnvTrace]], Trace) ->
-    if Head_EnvTrace == Trace ->
-           [Rest_EnvTrace];
-       true ->
-           []
+prove_shml(_And = {'and', _, Shml1, Shml2}, History, RecRefDic) ->
+    %?TRACE("Proving 'and' node ~p.~n", [_And]),
+    case prove_shml(Shml1, History, RecRefDic) of
+        ff ->
+            ff;
+        tt ->
+            prove_shml(Shml2, History, RecRefDic)
     end;
-sub_Histories([[Head_EnvTrace | Rest_EnvTrace] | Rest_EnvTraces], Trace) ->
-    if Head_EnvTrace == Trace ->
-           [Rest_EnvTrace | sub_Histories(Rest_EnvTraces, Trace)];
-       true ->
-           sub_Histories(Rest_EnvTraces, Trace)
+prove_shml(_Or = {'or', _, Shml1, Shml2}, History, RecRefDic) ->
+    %?TRACE("Proving 'or' node~p.~n", [_Or]),
+    case prove_shml(Shml1, History, RecRefDic) of
+        ff ->
+            prove_shml(Shml2, History, RecRefDic);
+        tt ->
+            tt
+    end;
+prove_shml(_Nec = {nec, _, Act, Shml}, History, RecRefDic) ->
+    Result = sub(History, get_action(Act)),
+    %?TRACE("Proving 'nec' node ~n Action:~p,~n History:~p,~n New_History ""~p,~n",[Act, History, Result]),
+    prove_nec_analysis(Result, Shml, RecRefDic).
+
+%%% prove_nec_analysis/3 given the resulting history if the history is;
+%%% empty the execution is halted and returns tt meaning the result failes
+%%% not empty the execution is continued with the new history
+
+-spec prove_nec_analysis(History, NextShml, RecRefDic) -> proof_return_types()
+    when History :: history(),
+         NextShml :: any(),
+         RecRefDic :: dict:dict().
+prove_nec_analysis([], _, _) ->
+    tt;
+prove_nec_analysis(New_History, NextShml, RecRefDic) ->
+    prove_shml(NextShml, New_History, RecRefDic).
+
+%%% sub/2 given a History and a Action if the given Trace in the History;
+%%% has the same headAction as the Action -> it will return the RestTrace and continue
+%%% does not have the same headAction as the Action -> it will continue with the next
+%%% is an empty list -> it is ignored
+
+-spec sub(History :: history(), Action :: trace()) -> history().
+sub([], _) ->
+    [];
+sub([[] | RestHistory], Action) ->
+    sub(RestHistory, Action);
+sub([_HeadTrace = [HeadAction | RestAction] | RestHistory], Action)
+    when HeadAction == Action ->
+    [RestAction | sub(RestHistory, Action)];
+sub([_HeadTrace = [HeadAction | _RestAction] | RestHistory], Action)
+    when HeadAction =/= Action ->
+    sub(RestHistory, Action).
+
+%%% ----------------------------------------------------------------------------
+%%% Synthesising functions.
+%%% ----------------------------------------------------------------------------
+
+%%% create_erl_syntax_proof_tree/1 given a Ast of maxShml it will be converted into a erl_syntax:syntaxTree()
+%%% The given syntaxTree has ignored aspects of the format
+%%% the ignored elements are conclusive toward the implementation of the proof system
+%%% additionally the Act section of the tree is converted into a string to more efficient use
+
+-spec create_erl_syntax_proof_tree(Ast) -> erl_syntax:syntaxTree() when Ast :: [any()].
+create_erl_syntax_proof_tree(Ast) ->
+    erl_syntax:list(create_erl_syntax_proof_tree_forms(Ast)).
+
+%%% create_erl_syntax_proof_tree_forms/1 given a Ast of maxShml it will be converted into a erl_syntax:syntaxTree()
+%%% this function will work based for the lists of forms only
+
+-spec create_erl_syntax_proof_tree_forms(Ast) -> erl_syntax:syntaxTree()
+    when Ast :: [any()].
+create_erl_syntax_proof_tree_forms([]) ->
+    [];
+create_erl_syntax_proof_tree_forms([{form, _, _, Shml} | Forms]) ->
+    [erl_syntax:tuple([erl_syntax:atom(form),
+                       erl_syntax:atom(ignore),
+                       erl_syntax:atom(ignore),
+                       create_erl_syntax_proof_tree_shml(Shml)])
+     | create_erl_syntax_proof_tree_forms(Forms)].
+
+%%% create_erl_syntax_proof_tree_shml/1 given a Ast of maxShml it will be converted into a erl_syntax:syntaxTree()
+%%% this function will work based for the Nodes of the tree from the forms.
+
+-spec create_erl_syntax_proof_tree_shml(Ast) -> erl_syntax:syntaxTree() when Ast :: any().
+create_erl_syntax_proof_tree_shml({ff, _}) ->
+    erl_syntax:tuple([erl_syntax:atom(ff), erl_syntax:atom(ignore)]);
+create_erl_syntax_proof_tree_shml({tt, _}) ->
+    throw({error, {?MODULE, " 'tt' should not be used "}});
+create_erl_syntax_proof_tree_shml({var, _, Name}) ->
+    erl_syntax:tuple([erl_syntax:atom(var), erl_syntax:atom(ignore), erl_syntax:atom(Name)]);
+create_erl_syntax_proof_tree_shml({max, _, Var, Shml}) ->
+    erl_syntax:tuple([erl_syntax:atom(max),
+                      erl_syntax:atom(ignore),
+                      create_erl_syntax_proof_tree_shml(Var),
+                      create_erl_syntax_proof_tree_shml(Shml)]);
+create_erl_syntax_proof_tree_shml({'and', _, Shml1, Shml2}) ->
+    erl_syntax:tuple([erl_syntax:atom('and'),
+                      erl_syntax:atom(ignore),
+                      create_erl_syntax_proof_tree_shml(Shml1),
+                      create_erl_syntax_proof_tree_shml(Shml2)]);
+create_erl_syntax_proof_tree_shml({'or', _, Shml1, Shml2}) ->
+    erl_syntax:tuple([erl_syntax:atom('or'),
+                      erl_syntax:atom(ignore),
+                      create_erl_syntax_proof_tree_shml(Shml1),
+                      create_erl_syntax_proof_tree_shml(Shml2)]);
+create_erl_syntax_proof_tree_shml({nec, _, Act, Shml}) ->
+    erl_syntax:tuple([erl_syntax:atom(nec),
+                      erl_syntax:atom(ignore),
+                      erl_syntax:string(get_action(Act)),
+                      create_erl_syntax_proof_tree_shml(Shml)]).
+
+%%% ----------------------------------------------------------------------------
+%%% History manipulation functions.
+%%% ----------------------------------------------------------------------------
+
+%%% read_history/1 takes a file name and returns either an error or the history from that file
+%%% given the file's history is of this format '~~~;~~~;~~~;\n~~~;~~~;~~~;'
+%%% the resultant history will seporate traces based on the \n
+%%% and seporate actions from traces based on ;
+
+-spec read_history(File :: file:filename()) ->
+                      {ok, Env :: [list()]} | {error, Error :: error_info()}.
+read_history(File) when is_list(File) ->
+    case file:read_file(File) of
+        {ok, Bytes} ->
+            {ok, format_binary_to_history(binary_to_list(Bytes))};
+        {error, Reason} ->
+            throw({error, {?MODULE, Reason}})
     end.
 
--spec sub(History :: history(), Trace :: trace()) -> history().
-sub([], _Trace) ->
+%%% format_binary_to_history/1 takes a byte list and returns the history from the list
+%%% it tokenizes the list based on \n
+
+-spec format_binary_to_history(Line) -> list() when Line :: [byte()].
+format_binary_to_history(Line) ->
+    format_binary_to_history2(string:tokens(Line, "\n")).
+
+%%% format_binary_to_history/2 takes a Trace list and returns the history from the list
+%%% it tokenizes the list based on ;
+
+format_binary_to_history2([]) ->
     [];
-sub([_HeadTrace = [HeadAction | RestAction] | RestHistory], Trace)
-    when HeadAction == Trace ->
-    [RestAction | sub(RestHistory, Trace)];
-sub([_HeadTrace = [HeadAction | _RestAction] | RestHistory], Trace)
-    when HeadAction =/= Trace ->
-    sub(RestHistory, Trace).
+format_binary_to_history2([Head | Rest]) ->
+    [string:tokens(Head, ";") | format_binary_to_history2(Rest)].
 
-%%% ----------------------------------------------------------------------------
-%%% Synthesising specific functions.
-%%% ----------------------------------------------------------------------------
+%%% add_to_history/2 Takes a history and a new Trace and adds it to the history
+%%% if the history already has the trace the trace is not added at the end of the history
 
-% Takes a given proof tree and converts it to a erl_syntax version for synthesizing.
--spec create_erl_syntax_proof_tree(Shml) -> erl_syntax:syntaxTree()
-    when Shml :: pf_shml() | pf_nec() | pf_head() | pf_formula().
-create_erl_syntax_proof_tree({ff}) ->
-    erl_syntax:tuple([erl_syntax:atom(ff)]);
-create_erl_syntax_proof_tree({var, Atom}) ->
-    erl_syntax:tuple([erl_syntax:atom(var), erl_syntax:atom(Atom)]);
-create_erl_syntax_proof_tree({max, Var, Shml}) ->
-    erl_syntax:tuple([erl_syntax:atom(max),
-                      create_erl_syntax_proof_tree(Var),
-                      create_erl_syntax_proof_tree(Shml)]);
-create_erl_syntax_proof_tree({'and', Shml_seq}) ->
-    erl_syntax:tuple([erl_syntax:atom('and'),
-                      erl_syntax:list(create_erl_syntax_proof_tree_seq(Shml_seq))]);
-create_erl_syntax_proof_tree({'or', Shml_seq}) ->
-    erl_syntax:tuple([erl_syntax:atom('or'),
-                      erl_syntax:list(create_erl_syntax_proof_tree_seq(Shml_seq))]);
-create_erl_syntax_proof_tree({form, Shml}) ->
-    erl_syntax:tuple([erl_syntax:atom(form), create_erl_syntax_proof_tree(Shml)]);
-create_erl_syntax_proof_tree({head, Shml_seq}) ->
-    erl_syntax:tuple([erl_syntax:atom(head),
-                      erl_syntax:list(create_erl_syntax_proof_tree_seq(Shml_seq))]);
-create_erl_syntax_proof_tree({nec, Act, Shml}) ->
-    erl_syntax:tuple([erl_syntax:atom(nec),
-                      erl_syntax:string(Act),
-                      create_erl_syntax_proof_tree(Shml)]).
-
-% manages the SHML_SEQ section of the proof_tree
--spec create_erl_syntax_proof_tree_seq(Shml_seq) -> erl_syntax:syntaxTree()
-    when Shml_seq :: pf_shml_seq().
-create_erl_syntax_proof_tree_seq([Shml]) ->
-    [create_erl_syntax_proof_tree(Shml)];
-create_erl_syntax_proof_tree_seq([Shml | Shml_seq]) ->
-    [create_erl_syntax_proof_tree(Shml) | create_erl_syntax_proof_tree_seq(Shml_seq)].
-
-% add_to_history takes a history and a trace and and adds the Trace to the history
--spec add_to_history(TraceList, Trace) -> Result
-    when TraceList :: history(),
+-spec add_to_history(History, Trace) -> Result
+    when History :: history(),
          Trace :: trace(),
          Result :: history().
 add_to_history([], []) ->
@@ -470,39 +400,63 @@ add_to_history([HeadTrace | RestHistory], Trace) ->
            [HeadTrace | add_to_history(RestHistory, Trace)]
     end.
 
-% write_history takes a Trace and file name,
-% Read the file to get the history,
-% adds the Trace to the history,
-% add the Trace to the file with the history if the new history was changed,
-% and returns the new history.
--spec write_history(New_Trace, FileName) -> New_History
+%%% write_history/2 takes a new Trace needed to be saved, and the file it will be saved in
+%%% if the Trace is a replica in the history it will not be added and the history is returned
+%%% if the Trace is new it is saved and added to the history, then the new history is returned 
+
+-spec write_history(New_Trace, FileName) -> New_History | {error, Error :: error_info()}
     when New_Trace :: trace(),
          FileName :: string(),
          New_History :: history().
 write_history(New_Trace, FileName) ->
-    {ok, Fd} = file:open(FileName, [append]),
-    {ok, Old_History} = read_env(FileName),
-    New_History = add_to_history(Old_History, New_Trace),
-    Test =
-        ordsets:is_subset(Old_History, New_History)
-        andalso ordsets:is_subset(New_History, Old_History),
-    if Test ->
-           New_History;
-       true ->
-           file:write(Fd, [format_trace_for_writing(New_Trace), "\n"]),
-           New_History
+    case file:open(FileName, [append]) of
+        {ok, Fd} ->
+            case read_history(FileName) of
+                {ok, Old_History} ->
+                    New_History = add_to_history(Old_History, New_Trace),
+                    case ordsets:is_subset(Old_History, New_History)
+                         andalso ordsets:is_subset(New_History, Old_History)
+                    of
+                        true ->
+                            New_History;
+                        false ->
+                            file:write(Fd, [format_trace_for_writing(New_Trace), "\n"]),
+                            New_History
+                    end;
+                {error, Reason} ->
+                    throw({error, {?MODULE, Reason}})
+            end;
+        {error, Reason} ->
+            throw({error, {?MODULE, Reason}})
     end.
 
-% format_trace_for_writing() adds ; to the Trace bewteen each action
+%%% format_trace_for_writing/1 takes a given trace and adds the ; between each action
+
 -spec format_trace_for_writing([string()]) -> [string()].
 format_trace_for_writing([]) ->
     [];
 format_trace_for_writing([Head | Rest]) ->
     [Head, ";" | format_trace_for_writing(Rest)].
 
-% flattens each action to be a string
--spec fix_trace(List :: [list()]) -> List :: [list()].
-fix_trace([]) ->
-    [];
-fix_trace([Head | Rest]) ->
-    [lists:flatten(Head) | fix_trace(Rest)].
+%%% get_trace/1 takes a string, a list or a Ast Act stucture from the maxShml and returns a string of the correct format.
+%%% if the given element is an Act it will be converted into the correct stucture and returned as a string
+%%% if the given element is a list it will be flattened into a string and returned
+%%% if the given element is a string it will just be returned
+
+-spec get_action(Act :: any() | list() | string()) -> string().
+get_action(Act) when is_list(Act) ->
+    Result = io_lib:char_list(Act),
+    if Result ->
+           Act;
+       true ->
+           lists:flatten(
+               io_lib:format("~p", [lists:flatten(Act)]))
+    end;
+get_action(Act) ->
+    Result = io_lib:char_list(Act),
+    if Result ->
+           Act;
+       true ->
+           lists:flatten(
+               io_lib:format("~p", [convert_act_to_format(Act)]))
+    end.

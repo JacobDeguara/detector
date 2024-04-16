@@ -202,29 +202,6 @@ shml_seq -> nec ',' shml_seq                          : ['$1' | '$3'].
 nec -> '[' act ']' shml                               : {nec, ?anno('$1'), '$2', '$4'}.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 %%% Ambiguous grammar that parses "ff and tt and ff" as {'and',ff,{'and',tt,ff}}}.
 %%shml -> shml and shml                                 : {'and', '$1', '$3'}.
 %%shml -> ff                                            : ff.

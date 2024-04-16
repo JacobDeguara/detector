@@ -304,7 +304,7 @@ compile(Mod, LexerMod, ParserMod, File, Opts) when is_list(Opts) ->
           % Extract base name of source script file to create module name. This
           % is used in -module attribute in synthesized monitor module.
           Module = list_to_atom(filename:basename(File, ?EXT_HML)),
-
+          io:format("< ~p >", [Ast]),
           % Synthesize monitor from parsed syntax tree in the form of an Erlang
           % syntax tree and write result to file as Erlang source or beam code.
           write_monitor(create_module(Mod, Ast, ?MFA_SPEC, Module, Opts), File, Opts);
