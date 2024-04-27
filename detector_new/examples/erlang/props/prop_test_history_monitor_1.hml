@@ -1,0 +1,13 @@
+with
+  system:start(_)
+check
+  [_ <- _, system:start(_)]
+  rec X.(
+    [_ ? {r}]( [_:_ ! {s}]X )
+    and
+      (
+        [_:_ ! {a}]no
+          or
+        [_:_ ! {c}]no
+      )
+  ).  

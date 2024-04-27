@@ -116,16 +116,16 @@ maxhml_term -> maxhml_fact                    : '$1'.
 maxhml_fact -> '[' act ']' maxhml_fact        : {nec, ?anno('$1'), '$2', '$4'}.
 
 % Maximal fix-point.
-maxhml_fact -> 'rec' var '.' '(' maxhml_expr ')'  : {max, ?anno('$1'), '$2', '$5'}.
+maxhml_fact -> 'rec' var '.' '(' maxhml_expr ')'  : {rec, ?anno('$1'), '$2', '$5'}.
 
 % Truth, falsity, recursive variables and bracketing.
 maxhml_fact -> 'no'                           : '$1'.
-maxhml_fact -> 'undefined'                           : '$1'.
+maxhml_fact -> 'undefined'                    : '$1'.
 maxhml_fact -> var                            : '$1'.
 maxhml_fact -> '(' maxhml_expr ')'            : '$2'.
 
 % Process in var performed a send of msg.
-act -> var ':' var '!' clause                         : {send, ?anno('$1'), '$1', '$3', '$5'}.
+act -> var ':' var '!' clause                 : {send, ?anno('$1'), '$1', '$3', '$5'}.
 
 % Process in var performed a receive of msg.
 act -> var '?' clause                         : {recv, ?anno('$1'), '$1', '$3'}.

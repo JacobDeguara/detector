@@ -12,7 +12,10 @@
 -export([prove_property/2]).
 -export([create_erl_syntax_proof_tree/1]).
 -export([write_history/2]).
--export([get_action/1]).
+-export([get_action/1, fix_trace/1]).
+-export([prove_monitor_test/2]).
+-export([gen_action_test/2]).
+-export([does_nothing/1]).
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -105,69 +108,38 @@ convert_act_to_format({send, _, Var1, Var2, Clause}) ->
 convert_act_to_format({recv, _, Var, Clause}) ->
     {trace, clause_to_format(Var), 'receive', clause_to_format(Clause)};
 convert_act_to_format({user, _, Clause}) ->
-    {user, clause_to_format(Clause)};
-convert_act_to_format({act, _, Act}) ->
-    convert_act_to_format(Act, []);
-convert_act_to_format({act, _, Act, ExtraClause}) ->
-    convert_act_to_format(Act, ExtraClause).
-
-%%% convert_act_to_format/2 takes an action from maxShml and its Extra Clause to replicate the Clause of Shmlnf parser
-%%% the result should be the same as if it was parsed using Shmlnf
-%%% possible difference is possible as the action wasnt fully realized
-
--spec convert_act_to_format(Act, ExtraClause :: any()) -> any() when Act :: any().
-convert_act_to_format({fork, _, Var0, Var1, {mfargs, _, Mod, Fun, Clause}},
-                      ExtraClause) ->
-    {trace,
-     clause_to_format(Var0),
-     spawn,
-     clause_to_format(Var1),
-     Mod,
-     Fun,
-     clause_to_format({clause, 1, Clause, ExtraClause, []})};
-convert_act_to_format({init, _, Var0, Var1, {mfargs, _, Mod, Fun, Clause}},
-                      ExtraClause) ->
-    {trace,
-     clause_to_format(Var0),
-     init,
-     clause_to_format(Var1),
-     Mod,
-     Fun,
-     clause_to_format({clause, 1, Clause, ExtraClause, []})};
-convert_act_to_format({exit, _, Var, Clause}, ExtraClause) ->
-    {exit, clause_to_format(Var), clause_to_format({clause, 1, Clause, ExtraClause, []})};
-convert_act_to_format({send, _, Var1, Var2, Clause}, ExtraClause) ->
-    {trace,
-     clause_to_format(Var1),
-     send,
-     clause_to_format(Var2),
-     clause_to_format({clause, 1, Clause, ExtraClause, []})};
-convert_act_to_format({recv, _, Var, Clause}, ExtraClause) ->
-    {trace,
-     clause_to_format(Var),
-     'receive',
-     clause_to_format({clause, 1, Clause, ExtraClause, []})}.
+    {user, clause_to_format(Clause)}.
 
 %%% clause_to_format/1 takes a few different formats and just takes
 %%% the important Names, lists or important information for the convertion
 
 -spec clause_to_format(Any) -> any() when Any :: list() | map().
-clause_to_format({var, _, String}) ->
-    String;
-clause_to_format({atom, _, String}) ->
-    String;
+clause_to_format({_, _, '\'rec\''}) ->
+    clause_to_format(rec);
+clause_to_format({_, _, '\'no\''}) ->
+    clause_to_format(no);
+clause_to_format({_, _, '\'undefined\''}) ->
+    clause_to_format(undefined);
+clause_to_format({_, _, '\'check\''}) ->
+    clause_to_format(check);
+clause_to_format({_, _, '\'with\''}) ->
+    clause_to_format(with);
+clause_to_format({_, _, Something}) ->
+    clause_to_format(Something);
 clause_to_format([]) ->
     [];
 clause_to_format([Head]) ->
     clause_to_format(Head);
 clause_to_format([Head | Rest]) ->
     [clause_to_format(Head) | clause_to_format(Rest)];
-clause_to_format({tuple, _, List}) ->
-    clause_to_format(List);
 clause_to_format({op, _, Op, Var1, Var2}) ->
     {Op, clause_to_format(Var1), clause_to_format(Var2)};
-clause_to_format({clause, _, List1, List2, List3}) ->
-    {clause_to_format(List1), clause_to_format(List2), clause_to_format(List3)}.
+clause_to_format({op, _, Op, Var1}) ->
+    {Op, clause_to_format(Var1)};
+clause_to_format({clause, _, List1, List2, _}) ->
+    {clause_to_format(List1), clause_to_format(List2)};
+clause_to_format(Anything) ->
+    Anything.
 
 %%% ----------------------------------------------------------------------------
 %%% Proof System Functions.
@@ -195,19 +167,14 @@ prove_property(Ast, History) ->
          History :: history(),
          RecRefDic :: dict:dict().
 prove_property_form_seq(_List = [_Head = {form, _, _, Shml}], History, RecRefDic) ->
-    case prove_shml(Shml, History, RecRefDic) of
-        ff ->
-            no;
-        tt ->
-            undefined
-    end;
+    prove_shml(Shml, History, RecRefDic);
 prove_property_form_seq(_List = [_Head = {form, _, _, Shml} | Forms],
                         History,
                         RecRefDic) ->
     case prove_shml(Shml, History, RecRefDic) of
-        ff ->
+        no ->
             no;
-        tt ->
+        undefined ->
             prove_property_form_seq(Forms, History, RecRefDic)
     end.
 
@@ -220,39 +187,39 @@ prove_property_form_seq(_List = [_Head = {form, _, _, Shml} | Forms],
 %%% 'nec' node holds a given action and will be followed through substituting from the history
 %%% 'and' and 'or' nodes will do their respective logic
 
--spec prove_shml(Shml, History, RecRefDic) -> ff | tt
+-spec prove_shml(Shml, History, RecRefDic) -> no | undefined
     when Shml :: any(),
          History :: history(),
          RecRefDic :: dict:dict().
-prove_shml(_Node = {ff, _}, _ENV, _) ->
-    %?TRACE("Proving 'ff' Leaf node ~p.~n", [_Node]),
-    ff;
-prove_shml(_Node = {tt, _}, _ENV, _) ->
-    %?TRACE("Proving 'ff' Leaf node ~p.~n", [_Node]),
-    tt;
+prove_shml(_Node = {no, _}, _ENV, _) ->
+    %?TRACE("Proving 'no' Leaf node ~p.~n", [_Node]),
+    no;
+prove_shml(_Node = {undefined, _}, _ENV, _) ->
+    %?TRACE("Proving 'undefined' Leaf node ~p.~n", [_Node]),
+    undefined;
 prove_shml(_Var = {var, _, Name}, History, RecRefDic) ->
     Rec = dict:fetch(Name, RecRefDic),
     %?TRACE("Proving 'var' Leaf node ~p.~n Refrenced Tree:~p.~n", [_Var, Rec]),
     prove_shml(Rec, History, RecRefDic);
-prove_shml(_Max = {max, _, _Var = {var, _, Name}, Shml}, History, RecRefDic) ->
-    %?TRACE("Proving 'max' node~p.~n Dictionary Refrence ~p.~n", [_Max, _Var]),
+prove_shml(_Max = {rec, _, _Var = {var, _, Name}, Shml}, History, RecRefDic) ->
+    %?TRACE("Proving 'rec' node~p.~n Dictionary Refrence ~p.~n", [_Max, _Var]),
     NewRecRefDic = dict:store(Name, Shml, RecRefDic),
     prove_shml(Shml, History, NewRecRefDic);
 prove_shml(_And = {'and', _, Shml1, Shml2}, History, RecRefDic) ->
     %?TRACE("Proving 'and' node ~p.~n", [_And]),
     case prove_shml(Shml1, History, RecRefDic) of
-        ff ->
-            ff;
-        tt ->
+        no ->
+            no;
+        undefined ->
             prove_shml(Shml2, History, RecRefDic)
     end;
 prove_shml(_Or = {'or', _, Shml1, Shml2}, History, RecRefDic) ->
     %?TRACE("Proving 'or' node~p.~n", [_Or]),
     case prove_shml(Shml1, History, RecRefDic) of
-        ff ->
+        no ->
             prove_shml(Shml2, History, RecRefDic);
-        tt ->
-            tt
+        undefined ->
+            undefined
     end;
 prove_shml(_Nec = {nec, _, Act, Shml}, History, RecRefDic) ->
     Result = sub(History, get_action(Act)),
@@ -268,7 +235,7 @@ prove_shml(_Nec = {nec, _, Act, Shml}, History, RecRefDic) ->
          NextShml :: any(),
          RecRefDic :: dict:dict().
 prove_nec_analysis([], _, _) ->
-    tt;
+    undefined;
 prove_nec_analysis(New_History, NextShml, RecRefDic) ->
     prove_shml(NextShml, New_History, RecRefDic).
 
@@ -320,14 +287,14 @@ create_erl_syntax_proof_tree_forms([{form, _, _, Shml} | Forms]) ->
 %%% this function will work based for the Nodes of the tree from the forms.
 
 -spec create_erl_syntax_proof_tree_shml(Ast) -> erl_syntax:syntaxTree() when Ast :: any().
-create_erl_syntax_proof_tree_shml({ff, _}) ->
-    erl_syntax:tuple([erl_syntax:atom(ff), erl_syntax:atom(ignore)]);
-create_erl_syntax_proof_tree_shml({tt, _}) ->
-    throw({error, {?MODULE, " 'tt' should not be used "}});
+create_erl_syntax_proof_tree_shml({no, _}) ->
+    erl_syntax:tuple([erl_syntax:atom(no), erl_syntax:atom(ignore)]);
+create_erl_syntax_proof_tree_shml({undefined, _}) ->
+    erl_syntax:tuple([erl_syntax:atom(undefined), erl_syntax:atom(ignore)]);
 create_erl_syntax_proof_tree_shml({var, _, Name}) ->
     erl_syntax:tuple([erl_syntax:atom(var), erl_syntax:atom(ignore), erl_syntax:atom(Name)]);
-create_erl_syntax_proof_tree_shml({max, _, Var, Shml}) ->
-    erl_syntax:tuple([erl_syntax:atom(max),
+create_erl_syntax_proof_tree_shml({rec, _, Var, Shml}) ->
+    erl_syntax:tuple([erl_syntax:atom(rec),
                       erl_syntax:atom(ignore),
                       create_erl_syntax_proof_tree_shml(Var),
                       create_erl_syntax_proof_tree_shml(Shml)]);
@@ -402,7 +369,7 @@ add_to_history([HeadTrace | RestHistory], Trace) ->
 
 %%% write_history/2 takes a new Trace needed to be saved, and the file it will be saved in
 %%% if the Trace is a replica in the history it will not be added and the history is returned
-%%% if the Trace is new it is saved and added to the history, then the new history is returned 
+%%% if the Trace is new it is saved and added to the history, then the new history is returned
 
 -spec write_history(New_Trace, FileName) -> New_History | {error, Error :: error_info()}
     when New_Trace :: trace(),
@@ -413,7 +380,7 @@ write_history(New_Trace, FileName) ->
         {ok, Fd} ->
             case read_history(FileName) of
                 {ok, Old_History} ->
-                    New_History = add_to_history(Old_History, New_Trace),
+                    New_History = add_to_history(Old_History, fix_trace(New_Trace)),
                     case ordsets:is_subset(Old_History, New_History)
                          andalso ordsets:is_subset(New_History, Old_History)
                     of
@@ -460,3 +427,75 @@ get_action(Act) ->
            lists:flatten(
                io_lib:format("~p", [convert_act_to_format(Act)]))
     end.
+
+-spec fix_trace(Trace :: trace()) -> FixedTrace :: trace().
+fix_trace([]) ->
+    [];
+fix_trace([HeadAction | Rest]) ->
+    [lists:flatten(HeadAction) | fix_trace(Rest)].
+
+%%% ----------------------------------------------------------------------------
+%%% Test System
+%%% ----------------------------------------------------------------------------
+
+-spec prove_monitor_test(Monitor_File :: file:filename(),
+                         History_File :: file:filename()) ->
+                            no | undefined.
+prove_monitor_test(Monitor_File, History_File) ->
+    try gen_eval:parse_file(rechml_lexer, rechml_parser, Monitor_File) of
+        {ok, AstP} ->
+            try read_history(History_File) of
+                {ok, History} ->
+                    proof_eval:prove_property(AstP, History);
+                {error, Reason} ->
+                    throw({error, {?MODULE, Reason}})
+            catch
+                _:Reason:Stk ->
+                    erlang:raise(error, Reason, Stk)
+            end;
+        {error, Reason} ->
+            throw({error, {?MODULE, Reason}})
+    catch
+        _:Reason:Stk ->
+            erlang:raise(error, Reason, Stk)
+    end.
+
+-spec gen_action_test(Monitor_File :: file:filename(), Fun :: function()) -> ok.
+gen_action_test(Monitor_File, Fun) ->
+    try gen_eval:parse_file(rechml_lexer, rechml_parser, Monitor_File) of
+        {ok, AstP} ->
+            gen_action_form(AstP, Fun);
+        {error, Reason} ->
+            throw({error, {?MODULE, Reason}})
+    catch
+        _:Reason:Stk ->
+            erlang:raise(error, Reason, Stk)
+    end.
+
+gen_action_form([], Fun) ->
+    ok;
+gen_action_form([{form, _, _, Shml} | Forms], Fun) ->
+    gen_action(Shml, Fun),
+    gen_action_form(Forms, Fun).
+
+gen_action({no, _}, _) ->
+    ok;
+gen_action({undefined, _}, _) ->
+    ok;
+gen_action({var, _, _}, _) ->
+    ok;
+gen_action({rec, _, _, Shml}, Fun) ->
+    gen_action(Shml, Fun);
+gen_action({'and', _, Shml1, Shml2}, Fun) ->
+    gen_action(Shml1, Fun),
+    gen_action(Shml2, Fun);
+gen_action({'or', _, Shml1, Shml2}, Fun) ->
+    gen_action(Shml1, Fun),
+    gen_action(Shml2, Fun);
+gen_action({nec, _, Act, Shml}, Fun) ->
+    io:format("~s~n",
+              [lists:flatten(io_lib:format("~p", [Fun(Act)]))]),
+    gen_action(Shml, Fun).
+
+does_nothing(Something) ->
+    Something.

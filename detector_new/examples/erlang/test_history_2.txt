@@ -1,0 +1,1 @@
+{trace,'_',init,'_',server_system,loop,{'_',[]}};{trace,'_','receive',{['_',rec|'_'],[]}};{trace,'_',send,'_',{[ok|msg],[]}};{trace,'_',send,'_',{[ok|alloc],[]}};

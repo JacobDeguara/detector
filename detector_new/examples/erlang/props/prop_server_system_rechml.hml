@@ -1,0 +1,18 @@
+with
+  server_system:loop(_)
+check
+  [_ <- _, server_system:loop(_)]
+  rec X.(
+    [_ ? {_, {'rec', _}}]
+      (
+        [_:_ ! {ok, msg}]X
+        and
+          (
+            [_:_ ! {ok, alloc}]no
+            or
+            [_:_ ! {ok, close}]no
+          )
+        and 
+            [_:_ ! {ok, alloc}]X
+      )
+  ).  

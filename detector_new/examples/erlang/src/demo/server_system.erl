@@ -29,10 +29,8 @@ loop(N) ->
             Clt ! {ok, msg},
             loop(N);
         {Clt, {rec, _ActType = alloc}} ->
-            Clt ! {ok, special},
             Clt ! {ok, alloc},
             loop(N);
         {Clt, {rec, _ActType = close}} ->
-            Clt ! {ok, special},
-            Clt ! {ok, closing}
+            Clt ! {ok, close}
     end.

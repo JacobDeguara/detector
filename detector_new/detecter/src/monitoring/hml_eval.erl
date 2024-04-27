@@ -24,6 +24,7 @@
 %%% Imports.
 
 -import(proof_eval, [create_erl_syntax_proof_tree/1, convert_act_to_format/1]).
+-import(gen_eval, [parse_file/3]).
 
 %%% ----------------------------------------------------------------------------
 %%% Macro and record definitions.
@@ -258,17 +259,14 @@
        Opts :: options(),
        Reason :: file:posix() | badarg | terminated.
 compile(FileMonitor, FileProperty, Opts) when is_list(Opts) ->
-  % Load and parse source script file.
-  case parse_file(FileMonitor) of
+  try parse_file(FileMonitor) of
     {ok, AstM} ->
-      % Before synthesizing monitor as Erlang source or beam code, make ensure
-      % the output directory exists.
-      case filelib:ensure_dir(
-             util:as_dir_name(
-               opts:out_dir_opt(Opts)))
+      try filelib:ensure_dir(
+            util:as_dir_name(
+              opts:out_dir_opt(Opts)))
       of
         ok ->
-          case gen_eval:parse_file(maxhml_lexer, maxhml_parser, FileProperty) of
+          try gen_eval:parse_file(rechml_lexer, rechml_parser, FileProperty) of
             {ok, AstP} ->
               % Extract base name of source script file to create module name. This
               % is used in -module attribute in synthesized monitor module.
@@ -278,16 +276,22 @@ compile(FileMonitor, FileProperty, Opts) when is_list(Opts) ->
               % syntax tree and write result to file as Erlang source or beam code.
               write_monitor(create_module(AstM, AstP, Module, Opts), FileMonitor, Opts);
             {error, Reason} ->
-              % Error when creating directory.
-              erlang:raise(error, Reason, erlang:get_stacktrace())
+              throw({error, {?MODULE, Reason}})
+          catch
+            _:Reason:Stk ->
+              erlang:raise(error, Reason, Stk)
           end;
         {error, Reason} ->
-          % Error when creating directory.
-          erlang:raise(error, Reason, erlang:get_stacktrace())
+          throw({error, {?MODULE, Reason}})
+      catch
+        _:Reason:Stk ->
+          erlang:raise(error, Reason, Stk)
       end;
-    {error, Error} ->
-      % Error when performing lexical analysis or parsing.
-      show_error(FileMonitor, Error)
+    {error, Reason} ->
+      throw({error, {?MODULE, Reason}})
+  catch
+    _:Reason:Stk ->
+      erlang:raise(error, Reason, Stk)
   end.
 
 %% @doc Parses the specified string containing one or more properties specified
@@ -495,7 +499,6 @@ visit_shml(_Node = {ff, _}, Opts, TraceNameNum) ->
   % an Error has occuered during testing this function fixes that issue.
   % the Issue was that the Trace list was defaulting a none string variant which
   % caused issues with the next part.
-
   % Run the function that handles the given new Trace, saves it to history and returns new History to be used.
   Writing =
     erl_syntax:match_expr(
@@ -515,7 +518,10 @@ visit_shml(_Node = {ff, _}, Opts, TraceNameNum) ->
   case opts:verbose_opt(Opts) of
     true ->
       Log = create_log("Reached verdict '~p'.~n", [Verdict], no),
-      Log2 = create_log("<< Resulting History ~p >>~n", [erl_syntax:variable("History")], 'end'), % who the history
+      Log2 =
+        create_log("<< Resulting History ~p >>~n",
+                   [erl_syntax:variable("History")],
+                   'end'), % who the history
       erl_syntax:block_expr([Writing, Log2, Log]);
     _ ->
       erl_syntax:block_expr([Writing, Verdict])
@@ -548,7 +554,8 @@ visit_shml(_Node = {max, _, Var = {var, _, _}, Shml}, Opts, TraceNameNum) ->
   % immediately as soon as it is created, thereby executing the very first
   % recursion unfolding immediately.
   Fun = erl_syntax:named_fun_expr(Var, [Clause]),
-  FunApplication = erl_syntax:application(Fun,[erl_syntax:variable(traceNameFlatten(TraceNameNum))]);
+  FunApplication =
+    erl_syntax:application(Fun, [erl_syntax:variable(traceNameFlatten(TraceNameNum))]);
 visit_shml(_Node = {'or', _, _, ShmlSeq}, Opts, TraceNameNum) when is_list(ShmlSeq) ->
   %?TRACE("Visiting 'and_~w' node ~p.", [length(ShmlSeq), _Node]),
   % Create function clauses for all conjuncts in the n-ary conjunction. These

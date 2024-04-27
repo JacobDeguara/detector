@@ -4790,7 +4790,7 @@ yeccpars2_175_(__Stack0) ->
 yeccpars2_180_(__Stack0) ->
  [___6,___5,___4,___3,___2,___1 | __Stack] = __Stack0,
  [begin
-                                                    {max, ?anno(___1), ___2, ___5}
+                                                    {rec, ?anno(___1), ___2, ___5}
   end | __Stack].
 
 -file("rechml_parser.erl", 4796).
