@@ -115,3 +115,13 @@ mfa_spec(_Mfa) ->
               "'~p'.~n\e[0m",
               [self(), _Mfa]),
     undefined.
+
+fun_1() ->
+    receive
+        (_E) ->
+                                         begin
+                                             io:format("\e[1m\e[33m*** [~w] Reached verdict 'end' on event ~p.~n\e[0m",
+                                                       [self(), _E]),
+                                             'end'
+                                         end            
+    end.
