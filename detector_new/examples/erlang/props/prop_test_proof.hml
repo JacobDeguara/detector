@@ -3,11 +3,11 @@ with
 check
   [_ <- _, system:start(_)]
   rec X.(
-    [_ ? {r}]( [_ ? {s}]X )
+    [_ ? {r}] ( [_:_ ! {s}]X )
     and
       (
-        [_ ? {a}]([_ ? {c}]no and [_ ? {d}]no)
+        [_:_ ! {a}](X and [_ ? {d}]no)
           or
-        [_ ? {c}]no
+        [_:_ ! {c}]no
       )
   ).  

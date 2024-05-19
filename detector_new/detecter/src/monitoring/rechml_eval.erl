@@ -2,6 +2,7 @@
 
 -author("Jacob Deguara").
 
+-prior_author("Duncan Paul Attard").
 
 %%% Includes.
 -include_lib("stdlib/include/assert.hrl").
@@ -10,12 +11,14 @@
 -include("log.hrl").
 
 %%% Public API.
--export([compile/3, parse_string/1, parse_file/1]).
+-export([compile/2, parse_string/1, parse_file/1]).
+-export([convert_to_shml/1]).
+-export([fix_list_to_shml/1, check_no_node_exists/1, merge_into_closed_list/2]).
 
 %%-export([parse_transform/2, get_ast/3]). %% Check if these are being used.
 
 %%% Types.
--export_type([formula/0]).
+-export_type([formula_nf/0, formula_rec/0]).
 -export_type([option/0, options/0]).
 -export_type([directory/0]).
 -export_type([line/0, error_description/0, error_info/0, errors/0, warnings/0]).
@@ -79,32 +82,33 @@
 
 %% Error list.
 
--type af_rechml() :: af_rechml_undefined() | af_rechml_no() | af_rechml_pos() | af_rechml_nec() |
-af_rechml_or() | af_rechml_and() |
-af_rechml_rec() | af_rechml_var().
-
 -type af_rechml_no() :: {no, line()}.
 -type af_rechml_undefined() :: {undefined, line()}.
--type af_rechml_pos() :: {pos, line(), gen_eval:af_sym_act(), af_rechml()}.
--type af_rechml_nec() :: {nec, line(), gen_eval:af_sym_act(), af_rechml()}.
+-type af_rechml_var() :: {var, line(), atom()}.
+-type af_rechml_rec() :: {rec, line(), af_rechml_var(), af_rechml()}.
 -type af_rechml_or() :: {'or', line(), af_rechml(), af_rechml()}.
 -type af_rechml_and() :: {'and', line(), af_rechml(), af_rechml()}.
--type af_rechml_rec() :: {rec, line(), af_rechml_var(), af_rechml()}.
--type af_rechml_var() :: {var, line(), atom()}.
-
+-type af_rechml_nec() :: {nec, line(), af_act(), af_rechml()}.
+-type af_rechml() ::
+  af_rechml_no() |
+  af_rechml_undefined() |
+  af_rechml_var() |
+  af_rechml_rec() |
+  af_rechml_or() |
+  af_rechml_and() |
+  af_rechml_nec().
+-type formula_rec() :: {form, line(), af_mfa(), af_rechml()}.
 -type af_ff() :: {ff, line()}.
 -type af_var() :: {var, line(), atom()}.
 -type af_max() :: {max, line(), af_var(), af_shml()}.
 -type af_n_and() :: {'and', line(), arity(), af_shml_seq()}.
--type af_n_or() :: {'or', line(), arity(), af_shml_seq()}.
 -type af_nec() :: {nec, line(), af_act(), af_shml()}.
--type af_shml() :: af_ff() | af_var() | af_max() | af_n_and() | af_n_or().
+-type af_shml() :: af_ff() | af_var() | af_max() | af_n_and().
 -type af_shml_seq() :: [af_nec()].
-
--type formula() :: {form, line(), af_rechml_mfa(), af_rechml()}.
--type af_rechml_mfa() :: {mfa, line(), module(), atom(), arity(), erl_parse:abstract_clause()}.
--type af_fork_act() :: {fork, line(), af_rechml_var(), af_rechml_var(), af_rechml_mfa()}.
--type af_init_act() :: {init, line(), af_rechml_var(), af_rechml_var(), af_rechml_mfa()}.
+-type formula_nf() :: {form, line(), af_mfa(), af_rechml()}.
+-type af_mfa() :: {mfa, line(), module(), atom(), arity(), erl_parse:abstract_clause()}.
+-type af_fork_act() :: {fork, line(), af_rechml_var(), af_rechml_var(), af_mfa()}.
+-type af_init_act() :: {init, line(), af_rechml_var(), af_rechml_var(), af_mfa()}.
 -type af_exit_act() :: {exit, line(), af_rechml_var(), erl_parse:abstract_clause()}.
 -type af_send_act() :: {send, line(), af_rechml_var(), erl_parse:abstract_clause()}.
 -type af_recv_act() :: {recv, line(), af_rechml_var(), erl_parse:abstract_clause()}.
@@ -148,158 +152,21 @@ af_rechml_rec() | af_rechml_var().
 %%         }
 %%       }
 %% }
-%%
-%% {@par Errors and warnings that arise during the compilation are reported on
-%%       the standard output. No monitor file is output unless compilation
-%%       completes with no errors. The output depends on whether the flag `erl'
-%%       is specified or otherwise.
-%% }
-%%
-%% <h4 id="#Specifying_properties">Specifying properties</h4>
-%%
-%% {@par Different property specifications must be separated with a comma (`,'),
-%%       with the last one being terminated with a period (`.'). A property
-%%       specification must target one function pattern, but may optionally
-%%       include optional guards. The guard specification format follows exactly
-%%       the one used in Erlang, the only difference being that guard functions
-%%       ({@eg} `is_pid/2', `is_alive/1', {@etc}) are not supported. Patterns
-%%       and guards on binaries, bitstring and maps have yet to be implemented
-%%       in the future. In addition, only external function calls may be
-%%       targeted {@ie} `Mod:Fun(Args)', with this being the function that is
-%%       specified into a {@link erlang:spawn/3}, {@link erlang:spawn/4},
-%%       {@etc} calls.
-%% }
-%% {@par For instance, a property specification that targets the function named
-%%       `test' in module `example' taking two parameters `A' and `B' such that
-%%       `A' is an integer in the closed interval `[0,10]' is specified as
-%%       follows:
-%% ```
-%% with
-%%  example:test(A, B) when A >= 0, A =< 10
-%% monitor
-%%   <property in SHMLnf>
-%% '''
-%% }
-%%
-%% {@par The property itself ({@ie} `<property in SHMLnf>') is then written
-%%       using the grammar defined as follows:
-%% ```
-%% <SHML> ::= ff (falsity, an atom)
-%%          | X (recursion variable specified as a standard Erlang variable)
-%%          | max(X. <SHML>) (maximal fix-point to specify recursive loops,
-%%                            comprised of one variable and a sub-formula
-%%                            <SHML>)
-%%          | and(<SHML list>) (a sequence of comma-separated conjuncts where
-%%                              each is itself a sub-formula <SHML> that however
-%%                              must start with a necessity [<ACTION>]<SHML>)
-%%          | or(<SHML list>) (a sequence of comma-separated disjunctions where
-%%                              each is itself a sub-formula <SHML> that however
-%%                              must start with a necessity [<ACTION>]<SHML>)
-%% '''
-%%       An action in a necessity `[<ACTION>]' can be one of the following:
-%%       {@ul
-%%         {@item A `fork' action, specified as `<VAR_0> -> <VAR_1>, <MFA>',
-%%                meaning that the parent process `<VAR_0>' forked child
-%%                `<VAR_1>';
-%%         }
-%%         {@item A `init' action, specified as `<VAR_0> <- <VAR_1>, <MFA>',
-%%                meaning that the child process `<VAR_0>' was started by
-%%                parent `<VAR_1>';
-%%         }
-%%         {@item A process `exit' action, specified as `<VAR> ** <CLAUSE>',
-%%                meaning that the process `<VAR>' terminated with reason
-%%                `<CLAUSE>';
-%%         }
-%%         {@item A process `send' action, specified as `<VAR> ! <CLAUSE>',
-%%                meaning that the sending process `<VAR>' send message
-%%                `<CLAUSE>';
-%%         }
-%%         {@item A process `receive' action, specified as `<VAR> ? <CLAUSE>',
-%%                meaning that the receiving process `<VAR>' received message
-%%                `<CLAUSE>';
-%%         }
-%%         {@item A generic user-given action, specified as `<CLAUSE>'.}
-%%       }
-%%       where `<VAR>', `<VAR_0>' and `<VAR_1>' are standard Erlang variables,
-%%       `<CLAUSE>' is a standard Erlang clause, and `<MFA>' is `Mod:Fun(Args)'
-%%       as described above. Actions in necessities can optionally includes
-%%       guards, albeit with the same restrictions outlined above.
-%% }
-%% {@par The following are some examples of properties:
-%% ```
-%% % Parent process P cannot fork a child process C via @{M,F,Args@} @{child,
-%% % init, [Id, StartCnt]@} (_ is used to match StartCnt since one does not care
-%% % about that value), such that the Id assigned to C is negative.
-%% with
-%%  example:test(A, B) when A >= 0, A =< 10
-%% monitor
-%%   and([P -> C, child:init([Id, _]) when Id < 0]ff).
-%% '''
-%% ```
-%% % Parent process P cannot fork a child process C via @{M,F,Args@} @{child,
-%% % init, [Id, StartCnt]@} (_ is used to match StartCnt since one does not care
-%% % about that value), only to terminate immediately with reason `aborted'.
-%% with
-%%  example:test(A, B) when A >= 0, A =< 10
-%% monitor
-%%   and([P -> C, child:init([Id, _])] and([P ** aborted]ff)).
-%% '''
-%% ```
-%% % Server process S can engage in a request-response cycle such that it
-%% % receives a request @{req, A1, A2@} consisting of two integers A1 and A2,
-%% % returning the result of their addition in the response @{resp, AA@}. It
-%% % however cannot return something other than their addition: this is taken
-%% % care of by the second necessity in the second conjunct via the action
-%% % clause @{resp, AA@} when AA =/= A1 + A2.
-%% with
-%%  example:test(A, B) when A >= 0, A =< 10
-%% monitor
-%%   max(X.
-%%     and(
-%%       [S ? @{req, A1, A2@}] and(
-%%         [S ! @{resp, AA@} when AA =/= A1 + A2]ff,
-%%         [S ! @{resp, AA@} when AA =:= A1 + A2]X)
-%%       )
-%%     )
-%%   ).
-%% '''
-%% }
-%%
 %% {@returns `ok' if compilation succeeds, `@{error, Reason@}' otherwise.}
--spec compile(FileMonitor, FileProperty, Opts) -> ok | {error, Reason}
-  when FileMonitor :: file:filename(),
-       FileProperty :: file:filename(),
+-spec compile(File, Opts) -> ok | {error, Reason}
+  when File :: file:filename(),
        Opts :: options(),
        Reason :: file:posix() | badarg | terminated.
-compile(FileMonitor, FileProperty, Opts) when is_list(Opts) ->
-  try parse_file(FileMonitor) of
-    {ok, AstM} ->
-      try filelib:ensure_dir(
-            util:as_dir_name(
-              opts:out_dir_opt(Opts)))
-      of
-        ok ->
-          try gen_eval:parse_file(rechml_lexer, rechml_parser, FileProperty) of
-            {ok, AstP} ->
-              % Extract base name of source script file to create module name. This
-              % is used in -module attribute in synthesized monitor module.
-              Module = list_to_atom(filename:basename(FileMonitor, ?EXT_HML)),
+compile(File, Opts) when is_list(Opts) ->
+  try parse_file(File) of
+    {ok, ASTrechml} ->
+      % Convert recHML AST to a shml AST
+      Module = list_to_atom(filename:basename(File, ?EXT_HML)),
 
-              % Synthesize monitor from parsed syntax tree in the form of an Erlang
-              % syntax tree and write result to file as Erlang source or beam code.
-              write_monitor(create_module(AstM, AstP, Module, Opts), FileMonitor, Opts);
-            {error, Reason} ->
-              throw({error, {?MODULE, Reason}})
-          catch
-            _:Reason:Stk ->
-              erlang:raise(error, Reason, Stk)
-          end;
-        {error, Reason} ->
-          throw({error, {?MODULE, Reason}})
-      catch
-        _:Reason:Stk ->
-          erlang:raise(error, Reason, Stk)
-      end;
+      ASTshml = convert_to_shml(ASTrechml),
+      % Synthesize monitor from parsed syntax tree in the form of an Erlang
+      % syntax tree and write result to file as Erlang source or beam code.
+      write_monitor(create_module(ASTshml, ASTrechml, Module, Opts), File, Opts);
     {error, Reason} ->
       throw({error, {?MODULE, Reason}})
   catch
@@ -317,14 +184,15 @@ compile(FileMonitor, FileProperty, Opts) when is_list(Opts) ->
 %% {@par See {@link parse_string/1} for details on SHMLnf specification format.}
 %%
 %% {@returns The syntax tree for the properties specified in SHMLnf.}
--spec parse_string(String) -> {ok, Ast :: [formula()]} | {error, Error :: error_info()}
+-spec parse_string(String) ->
+                    {ok, Ast :: [formula_rec()]} | {error, Error :: error_info()}
   when String :: string().
 parse_string(String) when is_list(String) ->
-  case hml_lexer:string(String) of
+  case rechml_lexer:string(String) of
     {ok, [], _} ->
       {ok, skip};
     {ok, Tokens, _} ->
-      case hml_parser:parse(Tokens) of
+      case rechml_parser:parse(Tokens) of
         {ok, Ast} ->
           {ok, Ast};
         {error, Error = {_, _, _}} ->
@@ -336,19 +204,8 @@ parse_string(String) when is_list(String) ->
       {error, Error}
   end.
 
-%% @doc Parses the specified file containing one or more properties specified
-%% in SHMLnf.
-%%
-%% {@params
-%%   {@name File}
-%%   {@desc The path where the file to parse resides.}
-%% }
-%%
-%% {@par See {@link compile/2} for details on SHMLnf specification format.}
-%%
-%% {@returns The syntax tree for the properties specified in SHMLnf.}
 -spec parse_file(File :: file:filename()) ->
-                  {ok, Ast :: [formula()]} | {error, Error :: error_info()}.
+                  {ok, Ast :: [formula_rec()]} | {error, Error :: error_info()}.
 parse_file(File) when is_list(File) ->
   case file:read_file(File) of
     {ok, Bytes} ->
@@ -369,6 +226,163 @@ compile_opts(Opts) ->
   [{i, opts:out_dir_opt(Opts)} | ?COMPILER_OPTS].
 
 %%% ----------------------------------------------------------------------------
+%%% ASTshml convertion tool functions.
+%%% ----------------------------------------------------------------------------
+
+-spec convert_to_shml(ASTrechml :: [formula_rec()]) -> ASTshml :: [formula_nf()].
+convert_to_shml([]) ->
+  [];
+convert_to_shml([{form, _line, MFA, SHMLrec} | Forms]) ->
+  [{form, _line, MFA, {'and', 0, 1, [convert_to_shml_start(SHMLrec)]}}
+   | convert_to_shml(Forms)].
+
+convert_to_shml_start({no, _line}) ->
+  {ff, 1};
+convert_to_shml_start({undefined, _line}) ->
+  {tt, 2};
+convert_to_shml_start({var, _line, Name}) ->
+  {var, 3, Name};
+convert_to_shml_start({rec, _line, Var, Shml}) ->
+  {max, 4, Var, convert_to_shml_start(Shml)};
+convert_to_shml_start(HML = {'and', _line, _, _}) ->
+  {'and', 5, 0, fix_list_to_shml(lists:flatten(convert_to_shml_and(HML)))};
+convert_to_shml_start(HML = {'or', _line, _, _}) ->
+  {'and', 6, 0, fix_list_to_shml(lists:flatten(convert_to_shml_and(HML)))};
+convert_to_shml_start({nec, _line, Act, Shml}) ->
+  case convert_to_shml_start(Shml) of
+    FF_node = {ff, _} ->
+      {nec, 7, Act, FF_node};
+    Var_node = {var, _, _} ->
+      {nec, 7, Act, Var_node};
+    Max_node = {max, _, _, _} ->
+      {nec, 7, Act, Max_node};
+    Any ->
+      {nec, 7, Act, {'and', 8, 1, [Any]}}
+  end.
+
+% makes list
+convert_to_shml_and({no, _line}) ->
+  [{ff, 9}];
+convert_to_shml_and({ff, _line}) ->
+  [{ff, 9.5}];
+convert_to_shml_and({undefined, _line}) ->
+  [{tt, 10}];
+convert_to_shml_and({tt, _line}) ->
+  [{tt, 10.5}];
+convert_to_shml_and({var, _line, Name}) ->
+  [{var, 11, Name}];
+convert_to_shml_and({rec, _line, Var, Shml}) ->
+  [{max, 12, Var, Shml}];
+convert_to_shml_and({max, _line, Var, Shml}) ->
+  [{max, 12.5, Var, Shml}];
+convert_to_shml_and({'and', _line, Shml1, Shml2}) ->
+  [convert_to_shml_and(Shml1) | convert_to_shml_and(Shml2)];
+convert_to_shml_and({'or', _line, Shml1, Shml2}) ->
+  [convert_to_shml_and(Shml1) | convert_to_shml_and(Shml2)];
+convert_to_shml_and({nec, _line, Act, Shml}) ->
+  [{nec, 13, Act, Shml}].
+
+fix_list_to_shml(List) ->
+  % checks if a single no node exists
+  case check_no_node_exists(List) of
+    true ->
+      {ff, 14};
+    false ->
+      % checks if a single var node exists
+      case check_var_node_exists(List) of
+        {var, _line, Name} ->
+          {var, 15, Name};
+        false ->
+          % removes all other nodes other then the nec nodes
+          case fix_list_to_nec_nodes_only(List) of
+            [] ->
+              {ff, 16};
+            NewList ->
+              merge_into_closed_list(NewList, [])
+          end
+      end
+  end.
+
+% not working ?
+check_no_node_exists([]) ->
+  false;
+check_no_node_exists([{ff, _line} | _]) ->
+  true;
+check_no_node_exists([{no, _line} | _]) ->
+  true;
+check_no_node_exists([_ | Next]) ->
+  check_no_node_exists(Next).
+
+check_var_node_exists([]) ->
+  false;
+check_var_node_exists([VAR = {var, _line, _} | _]) ->
+  VAR;
+check_var_node_exists([_ | Next]) ->
+  check_var_node_exists(Next).
+
+fix_list_to_nec_nodes_only([]) ->
+  [];
+fix_list_to_nec_nodes_only([NEC = {nec, _line, _, _} | Next]) ->
+  [NEC | fix_list_to_nec_nodes_only(Next)];
+fix_list_to_nec_nodes_only([_ | Next]) ->
+  fix_list_to_nec_nodes_only(Next).
+
+compare_nec_nodes({nec, _, Act1, _}, {nec, _, Act2, _}) ->
+  proof_eval:get_action(Act1) == proof_eval:get_action(Act2).
+
+already_in_saved_list([], _) ->
+  false;
+already_in_saved_list([NecR | Next], NecA) ->
+  case compare_nec_nodes(NecR, NecA) of
+    true ->
+      true;
+    false ->
+      already_in_saved_list(Next, NecA)
+  end.
+
+find_repeating_elements([], _) ->
+  [];
+find_repeating_elements([NEC = {nec, _line, _, Shml} | Next], NecR) ->
+  case compare_nec_nodes(NEC, NecR) of
+    true ->
+      [Shml | find_repeating_elements(Next, NecR)];
+    false ->
+      find_repeating_elements(Next, NecR)
+  end.
+
+merge_into_closed_list([], List) ->
+  List;
+merge_into_closed_list(Current_List = [NEC = {nec, _line, Act, _} | Next], List) ->
+  case already_in_saved_list(List, NEC) of
+    true ->
+      merge_into_closed_list(Next, List);
+    false ->
+      case fix_list_to_shml(expand_list(find_repeating_elements(Current_List, NEC))) of
+        FF_node = {ff, _} ->
+          NewNec = {nec, 17, Act, FF_node},
+          merge_into_closed_list(Next, [NewNec | List]);
+        Var_node = {var, _, _} ->
+          NewNec = {nec, 17, Act, Var_node},
+          merge_into_closed_list(Next, [NewNec | List]);
+        Max_node = {max, _, _, _} ->
+          NewNec = {nec, 17, Act, Max_node},
+          merge_into_closed_list(Next, [NewNec | List]);
+        Any ->
+          NewNec = {nec, 17, Act, {'and', 8, 1, Any}},
+          merge_into_closed_list(Next, [NewNec | List])
+      end
+  end.
+
+
+expand_list([]) -> [];
+expand_list([{'and', _line, Shml1, Shml2}|Next]) -> [expand_list(Shml1),expand_list(Shml2)|expand_list(Next)];
+expand_list([{'or', _line, Shml1, Shml2}|Next]) -> [expand_list(Shml1),expand_list(Shml2)|expand_list(Next)];
+expand_list([Any|Next]) -> [Any|expand_list(Next)];
+expand_list(Any) -> Any.
+
+
+
+%%% ----------------------------------------------------------------------------
 %%% AST manipulation functions functions.
 %%% ----------------------------------------------------------------------------
 
@@ -378,12 +392,13 @@ compile_opts(Opts) ->
 %% {@link tracer} and {@link weaver}) to determine whether a monitor needs to
 %% be instrumented or otherwise. This, it does via standard Erlang pattern
 %% matching on MFA patterns specified by the user.
--spec create_module(AstM, AstP, Module, Opts) -> Forms :: [erl_parse:abstract_form()]
-  when AstM :: [formula()],
-       AstP :: any(),
+-spec create_module(ASTshml, ASTrechml, Module, Opts) ->
+                     Forms :: [erl_parse:abstract_form()]
+  when ASTshml :: [formula_nf()],
+       ASTrechml :: [formula_rec()],
        Module :: module(),
        Opts :: options().
-create_module(AstM, AstP, Module, Opts) ->
+create_module(ASTshml, ASTrechml, Module, Opts) ->
   % Create monitor file meta information.
   MfaSpec = ?MFA_SPEC,
   {{YY, MM, DD}, {HH, Mm, SS}} = calendar:local_time(),
@@ -400,16 +415,16 @@ create_module(AstM, AstP, Module, Opts) ->
   %% Create monitor module.
   Fun =
     erl_syntax:function(
-      erl_syntax:atom(?MFA_SPEC), visit_forms(AstM, Opts, AstM, AstP)),
+      erl_syntax:atom(?MFA_SPEC), visit_forms(ASTshml, Opts, ASTshml, ASTrechml)),
   erl_syntax:revert_forms(Forms ++ [Fun]).
 
 %% @private Visits SHMLnf formula nodes and generates the corresponding syntax
 %% tree describing one monitor (i.e. one formula is mapped to one monitor).
--spec visit_forms(Forms, Opts, AstM, AstP) -> Forms :: [erl_syntax:syntaxTree()]
-  when Forms :: [formula()],
+-spec visit_forms(Forms, Opts, ASTshml, ASTrechml) -> Forms :: [erl_syntax:syntaxTree()]
+  when Forms :: [formula_nf()],
        Opts :: options(),
-       AstM :: [formula()],
-       AstP :: any().
+       ASTshml :: [formula_nf()],
+       ASTrechml :: [formula_rec()].
 visit_forms([], Opts, _, _) ->
   % Generate catchall function clause pattern that matches Mod:Fun(Args) pattern
   % to return undefined. This is the case when no monitor should be attached to
@@ -423,7 +438,10 @@ visit_forms([], Opts, _, _) ->
     _ ->
       [erl_syntax:clause([erl_syntax:underscore()], none, [erl_syntax:atom(undefined)])]
   end;
-visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts, AstM, AstP) ->
+visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms],
+            Opts,
+            ASTshml,
+            ASTrechml) ->
   % Generate TraceName Number to refrence new names for Trace identification.
   TraceNameNum = 1,
 
@@ -442,7 +460,7 @@ visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts, AstM
   % Generate the ProofTree for proofing later and save it as code int the monitor
   Proof_tree =
     erl_syntax:match_expr(
-      erl_syntax:variable("Proof_tree"), proof_eval:create_erl_syntax_proof_tree(AstP)),
+      erl_syntax:variable("Proof_tree"), proof_eval:create_erl_syntax_proof_tree(ASTrechml)),
 
   % Unpack patterns and guard from MFA clause. The clause patterns are the
   % argument patterns used in the Mod:Fun(Args) invocation: these must be
@@ -479,9 +497,15 @@ visit_forms([{form, _, {mfa, _, Mod, Fun, _, Clause}, Shml} | Forms], Opts, AstM
                                                  Log,
                                                  visit_shml(Shml, Opts, TraceNameNum)])]),
       Match = erl_syntax:match_expr(MfaVar, MfaTuple),
-      [erl_syntax:clause([Match], Guard, [Body0]) | visit_forms(Forms, Opts, AstM, AstP)];
+      [erl_syntax:clause([Match], Guard, [Body0]) | visit_forms(Forms,
+                                                                Opts,
+                                                                ASTshml,
+                                                                ASTrechml)];
     _ ->
-      [erl_syntax:clause([MfaTuple], Guard, [Body]) | visit_forms(Forms, Opts, AstM, AstP)]
+      [erl_syntax:clause([MfaTuple], Guard, [Body]) | visit_forms(Forms,
+                                                                  Opts,
+                                                                  ASTshml,
+                                                                  ASTrechml)]
   end.
 
 %%  [erl_syntax:clause([MfaTuple], Guard, [Body]) | visit_forms(Forms, Opts)].
@@ -928,58 +952,6 @@ format_error({Line, hml_parser, Error}) ->
 format_error({Line, hml_lexer, Error}) ->
   {Line, hml_lexer:format_error(Error)}.%%format_error({Line, sys_core_fold, Error}) ->
                                         %%  {Line, sys_core_fold:format_error(Error)}.
-
-%%gen_module() ->
-%%
-%%  Module = test,
-%%  Number1 = {integer, 0, 200},
-%%
-%%  ModuleAst = ?Q(["-module(odule)."]),
-%%
-%%  Tuple = ?Q("{foo, 42}"),
-%%  io:format("Ast of tuple ~p~n", [Tuple]),
-%%  ?Q("{foo, _@Number}") = Tuple,
-%%
-%%  Call = ?Q("foo:bar(_@Number1)"),
-%%  merl:print(Call),
-%%
-%%  io:format("Number is ~p~n", [Number]),
-%%
-%%
-%%%%  Bar = {bar, 42},
-%%  Bar = barxx,
-%%%%  Foo = ?Q("{foo, _@Bar@}")
-%%  Foo = ?Q("-module('@Bar@')."),
-%%  io:format("Module AST ~p~n", [Foo]),
-%%
-%%  Foo2 = erl_syntax:abstract(test),
-%%  io:format("erl_syntax ~p~n", [Foo2]),
-%%
-%%  Foo3 = ?Q("test"),
-%%  io:format("?Q ~p~n", [Foo3]),
-%%
-%%
-%%%%  Foo = erl_syntax:attribute(erl_syntax:abstract(test)),
-%%
-%%  Forms = erl_syntax:revert_forms([Foo, {eof, 73}]),
-%%
-%%
-%%  IncDir = "./include", BinDir = "./ebin",
-%%  CompileOpts = [
-%%    {i, IncDir}, {i, BinDir}, {outdir, BinDir}, return, 'E'
-%%  ],
-%%  compile:forms(Forms, CompileOpts).
-
-%%get_ast(File, IncDir, BinDir) ->
-%%  CompileOpts = [
-%%    {i, IncDir}, {i, BinDir}, {outdir, BinDir}, return,
-%%    {parse_transform, ?MODULE}, 'E'
-%%  ],
-%%  compile:file(File, CompileOpts).
-%%
-%%parse_transform(Ast, _) ->
-%%  io:format("~p~n", [Ast]),
-%%  Ast.
 
 %%% ----------------------------------------------------------------------------
 %%% Trace Name Syntax
