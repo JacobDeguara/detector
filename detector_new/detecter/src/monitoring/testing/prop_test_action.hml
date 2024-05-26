@@ -1,0 +1,5 @@
+with
+  server_system:loop(_)
+check
+  [_ <- _, server_system:loop(_)]
+  [Srv:Clt ! {bye, Tot} when Tot < 0][_:_ ! _][_ ? {r,s,a,c,b,d}][Clt ? {something}][_:_ ! Tok when OwnTok =:= Tok][_:_ ! {ok, Res} when Res =/= A + B][_:_ ! {ok, Res} when Res =:= A + B][_ ? {_, {add, A, B}}]no. 

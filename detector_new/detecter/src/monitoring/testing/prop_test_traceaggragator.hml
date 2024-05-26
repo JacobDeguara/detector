@@ -1,0 +1,15 @@
+with
+  rechml_unit_test:loop()
+check
+  [_ <- _, rechml_unit_test:loop()]
+  rec X.(
+    [_ ? {r}]( [_ ? {s}]X )
+    and
+    [_ ? {a}]X
+    and
+      (
+        [_ ? {a}]no
+          or
+        [_ ? {c}]no
+      )
+  ).

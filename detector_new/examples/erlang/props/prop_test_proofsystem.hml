@@ -1,0 +1,7 @@
+with
+  server_system:loop(_)
+check
+  [_ <- _, server_system:loop(_)]
+  rec X.(
+    [_ ? {r}]( [_:_ ! {s}]no )
+  ). 
