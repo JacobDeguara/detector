@@ -1,7 +1,7 @@
 with
-  system:start(_)
+  rechml_unit_test:loop()
 check
-  [_ <- _, system:start(_)]
+  [_ <- _, rechml_unit_test:loop()]
   rec X.(
     [_ ? {r}]( [_ ? {s}]X )
     and

@@ -1,7 +1,13 @@
 with
-  server_system:loop(_)
+  system:start(_)
 check
-  [_ <- _, server_system:loop(_)]
+  [_ <- _, system:start(_)]
   rec X.(
-    [_ ? {r}]( [_:_ ! {s}]no )
-  ). 
+    [_ ? {r}]( [_ ? {s}]X )
+    and
+      (
+        [_ ? {a}]no
+          or
+        [_ ? {c}]no
+      )
+  ).  
